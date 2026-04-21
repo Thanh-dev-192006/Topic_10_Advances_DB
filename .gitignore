@@ -207,4 +207,7 @@ marimo/_lsp/
 __marimo__/
 
 .env
-milvus-setup/
+milvus-setup/**
+!milvus-setup/*.ipynb
+!milvus-setup/*.py
+!milvus-setup/*.md
