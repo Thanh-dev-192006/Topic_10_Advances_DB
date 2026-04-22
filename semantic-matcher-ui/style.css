@@ -441,6 +441,11 @@ h1, h2, h3, .metric-value, .column-title, .result-title, .page-title {
   font-size: 1.1rem;
 }
 /* The Match Score Badges logic */
+.score-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .score-badge {
   padding: 6px 14px;
   border-radius: 20px;
@@ -448,7 +453,12 @@ h1, h2, h3, .metric-value, .column-title, .result-title, .page-title {
   font-weight: 700;
   background: var(--tertiary-container);
   color: var(--on-tertiary-container);
-  box-shadow: inset 0 0 0 2px var(--tertiary-fixed); /* Inner glow */
+  box-shadow: inset 0 0 0 2px var(--tertiary-fixed);
+}
+.raw-score {
+  font-size: 0.75rem;
+  color: var(--on-surface-variant);
+  opacity: 0.7;
 }
 .result-snippet {
   font-size: 0.95rem;

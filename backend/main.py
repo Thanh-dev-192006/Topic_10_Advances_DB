@@ -18,7 +18,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global variables
 conn = None
 cur = None
 model = None
@@ -35,7 +34,9 @@ def truncate_text(text, max_length=500):
     return truncated[:last_space] if last_space > 0 else truncated
 
 def extract_keywords(query: str) -> list[str]:
-    STOP_WORDS = {"with", "and", "the", "for", "in", "of", "to", "a", "an", "is", "are", "that", "this", "have", "has", "been", "will", "can", "from", "or", "on", "at", "by", "who", "our"}
+    STOP_WORDS = {"with", "and", "the", "for", "in", "of", "to", "a", "an", "is", "are",
+                  "that", "this", "have", "has", "been", "will", "can", "from", "or", "on",
+                  "at", "by", "who", "our"}
     words = re.findall(r'[a-zA-Z]+', query.lower())
     return [w for w in words if len(w) >= 3 and w not in STOP_WORDS]
 
@@ -44,7 +45,7 @@ def startup_event():
     global conn, cur, model, cv_col
     print("Loading datasets...")
     cv_data = load_dataset("lang-uk/recruitment-dataset-candidate-profiles-english", split="train[:300]")
-    
+
     cleaned_cv = []
     for i, item in enumerate(cv_data):
         cv_text = clean_text(item.get("CV"))
@@ -69,7 +70,10 @@ def startup_event():
             highlights TEXT, keyword TEXT, exp_years TEXT, looking_for TEXT
         )
     """)
-    cur.executemany("INSERT INTO cvs VALUES (:id, :position, :cv_text, :highlights, :keyword, :exp_years, :looking_for)", cleaned_cv)
+    cur.executemany(
+        "INSERT INTO cvs VALUES (:id, :position, :cv_text, :highlights, :keyword, :exp_years, :looking_for)",
+        cleaned_cv
+    )
     conn.commit()
 
     print("Loading SentenceTransformer model...")
@@ -95,33 +99,60 @@ class SearchResponse(BaseModel):
 @app.get("/api/search", response_model=SearchResponse)
 def search(query: str = Query(...), limit: int = 5):
     keywords = extract_keywords(query)
-    
+
     # --- SQL LIKE SEARCH ---
     sql_start = time.perf_counter()
     sql_results = []
     sql_strategy = "AND"
-    
+
     if keywords:
-        and_conditions = " AND ".join(f"(cv_text LIKE '%{kw}%' OR position LIKE '%{kw}%' OR highlights LIKE '%{kw}%' OR keyword LIKE '%{kw}%')" for kw in keywords)
-        match_score_expr = " + ".join(f"(CASE WHEN cv_text LIKE '%{kw}%' OR position LIKE '%{kw}%' OR highlights LIKE '%{kw}%' THEN 1 ELSE 0 END)" for kw in keywords)
-        
-        and_sql = f"SELECT id, position, keyword, cv_text, highlights, ({match_score_expr}) AS match_score FROM cvs WHERE {and_conditions} ORDER BY match_score DESC LIMIT {limit}"
-        cur.execute(and_sql)
+        # Weighted scoring: position & keyword field = 2pts each, cv_text & highlights = 1pt each
+        # Max score per keyword = 6pts; total max = len(keywords) * 6
+        field_check = "(cv_text LIKE ? OR position LIKE ? OR highlights LIKE ? OR keyword LIKE ?)"
+        score_check = (
+            "(CASE WHEN position LIKE ? THEN 2 ELSE 0 END"
+            " + CASE WHEN keyword LIKE ? THEN 2 ELSE 0 END"
+            " + CASE WHEN cv_text LIKE ? THEN 1 ELSE 0 END"
+            " + CASE WHEN highlights LIKE ? THEN 1 ELSE 0 END)"
+        )
+
+        and_conditions = " AND ".join(field_check for _ in keywords)
+        or_conditions = " OR ".join(field_check for _ in keywords)
+        match_score_expr = " + ".join(score_check for _ in keywords)
+        max_possible = len(keywords) * 6
+
+        # Each keyword needs 4 identical like values (%kw%) for both score and WHERE clauses
+        kw_params = [f'%{kw}%' for kw in keywords for _ in range(4)]
+
+        and_sql = (
+            f"SELECT id, position, keyword, cv_text, highlights,"
+            f" ({match_score_expr}) AS match_score"
+            f" FROM cvs WHERE {and_conditions}"
+            f" ORDER BY match_score DESC LIMIT ?"
+        )
+        # Params order: score_check placeholders (kw_params) then WHERE placeholders (kw_params)
+        cur.execute(and_sql, kw_params + kw_params + [limit])
         raw_results = [dict(row) for row in cur.fetchall()]
-        
+
         if not raw_results:
             sql_strategy = "OR"
-            or_conditions = " OR ".join(f"(cv_text LIKE '%{kw}%' OR position LIKE '%{kw}%' OR highlights LIKE '%{kw}%' OR keyword LIKE '%{kw}%')" for kw in keywords)
-            or_sql = f"SELECT id, position, keyword, cv_text, highlights, ({match_score_expr}) AS match_score FROM cvs WHERE {or_conditions} ORDER BY match_score DESC LIMIT {limit}"
-            cur.execute(or_sql)
+            or_sql = (
+                f"SELECT id, position, keyword, cv_text, highlights,"
+                f" ({match_score_expr}) AS match_score"
+                f" FROM cvs WHERE {or_conditions}"
+                f" ORDER BY match_score DESC LIMIT ?"
+            )
+            cur.execute(or_sql, kw_params + kw_params + [limit])
             raw_results = [dict(row) for row in cur.fetchall()]
-        
+
         for i, row in enumerate(raw_results):
+            score_pct = round(row["match_score"] / max_possible * 100)
             sql_results.append({
                 "rank": i + 1,
                 "title": row["position"],
-                "score": f"{row['match_score']}/{len(keywords)}",
-                "text": row["cv_text"][:150] + "..."
+                "score": str(score_pct),
+                "raw_score": f"{row['match_score']}/{max_possible}",
+                "text": row["cv_text"][:150] + "...",
             })
     sql_time_ms = (time.perf_counter() - sql_start) * 1000
 
@@ -135,16 +166,24 @@ def search(query: str = Query(...), limit: int = 5):
             anns_field="vector",
             param={"metric_type": "COSINE"},
             limit=limit,
-            output_fields=["position", "keyword", "cv_text"]
+            output_fields=["position", "keyword", "cv_text"],
         )
-        for i, hit in enumerate(v_res[0]):
-            score_percent = f"{hit.score:.2f}"
-            vector_results.append({
-                "rank": i + 1,
-                "title": hit.entity.get('position'),
-                "score": score_percent,
-                "text": hit.entity.get('cv_text')[:150] + "..."
-            })
+
+        hits = v_res[0]
+        if hits:
+            # Clip negatives then normalize relative to top result so best hit = 100%
+            raw_scores = [max(0.0, hit.score) for hit in hits]
+            top_score = raw_scores[0] if raw_scores[0] > 0 else 1.0
+
+            for i, (hit, raw) in enumerate(zip(hits, raw_scores)):
+                normalized = round(raw / top_score * 100)
+                vector_results.append({
+                    "rank": i + 1,
+                    "title": hit.entity.get("position"),
+                    "score": str(normalized),
+                    "raw_score": f"{hit.score:.4f}",
+                    "text": hit.entity.get("cv_text")[:150] + "...",
+                })
     vector_time_ms = (time.perf_counter() - vector_start) * 1000
 
     return {
@@ -154,5 +193,5 @@ def search(query: str = Query(...), limit: int = 5):
         "sql_time_ms": sql_time_ms,
         "vector_time_ms": vector_time_ms,
         "sql_results": sql_results,
-        "vector_results": vector_results
+        "vector_results": vector_results,
     }

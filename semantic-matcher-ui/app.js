@@ -32,7 +32,8 @@ document.addEventListener('DOMContentLoaded', () => {
     analyzeBtn.disabled = true;
     
     try {
-      const response = await fetch(`http://127.0.0.1:8001/api/search?query=${encodeURIComponent(query)}&limit=5`);
+      const limit = topNRange.value;
+      const response = await fetch(`http://127.0.0.1:8001/api/search?query=${encodeURIComponent(query)}&limit=${limit}`);
       const data = await response.json();
       
       const keywordsContainer = document.querySelector('.keyword-chips');
@@ -62,19 +63,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Helper to parse scores if needed
+  // Scores are sent as integer strings (0-100) from backend
   const formatScore = (score) => {
-    if(typeof score === 'string' && score.includes('/')) {
-      return score + ' Match'; // For SQL: "3/5 Match"
-    }
-    
-    // For Vector Score (e.g. "0.54" or "0.5451")
-    const num = parseFloat(score);
-    if (!isNaN(num)) {
-      // Multiply by 100 to get percentage
-      return (num * 100).toFixed(1) + '% Match';
-    }
-    return score + ' Match';
+    const num = parseInt(score, 10);
+    return isNaN(num) ? score : `${num}% Match`;
   };
 
 
@@ -92,11 +84,17 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
       
+      const rawLabel = item.raw_score
+        ? `<span class="raw-score">${type === 'vector' ? 'Cosine: ' : 'Raw: '}${item.raw_score}</span>`
+        : '';
       container.innerHTML += `
         <div class="result-card">
           <div class="result-header">
             <span class="result-rank">Rank #${item.rank}</span>
-            <span class="score-badge">${formatScore(item.score)}</span>
+            <div class="score-group">
+              <span class="score-badge">${formatScore(item.score)}</span>
+              ${rawLabel}
+            </div>
           </div>
           <div class="result-title">${item.title}</div>
           <p class="result-snippet">${item.text}</p>
