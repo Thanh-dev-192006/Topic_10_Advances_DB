@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Semantic Recruitment Matcher</title>
+  <!-- Google Fonts: Manrope & Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Manrope:wght@500;600;700&display=swap"
+    rel="stylesheet">
+  <!-- Phosphor Icons -->
+  <script src="https://unpkg.com/@phosphor-icons/web"></script>
+  <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+  <!-- Background Mesh for Glassmorphism -->
+  <div class="bg-mesh bg-mesh-1"></div>
+  <div class="bg-mesh bg-mesh-2"></div>
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="logo">
+      <i class="ph-fill ph-target"></i>
+      Semantic Matcher
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-title">Search Mode</div>
+      <div class="select-wrapper">
+        <select class="form-select">
+          <option>CVs by JD query</option>
+          <option>JDs by CV query</option>
+        </select>
+        <i class="ph ph-caret-down select-icon"></i>
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-title">Filters</div>
+      <div class="select-wrapper mb-3">
+        <select class="form-select">
+          <option>All Industries</option>
+          <option>IT / Software</option>
+          <option>Design</option>
+        </select>
+        <i class="ph ph-caret-down select-icon"></i>
+      </div>
+      <div class="select-wrapper">
+        <select class="form-select">
+          <option>Any Experience</option>
+          <option>0-2 Years</option>
+          <option>3-5 Years</option>
+          <option>5+ Years</option>
+        </select>
+        <i class="ph ph-caret-down select-icon"></i>
+      </div>
+
+      <div class="sidebar-label">Top-N Results: <span id="topNValue">5</span></div>
+      <input type="range" min="1" max="20" value="5" class="form-range" id="topNRange">
+    </div>
+
+    <div class="data-status">
+      <div class="status-item">
+        <span class="status-label"><i class="ph ph-file-text"></i> CVs Indexed</span>
+        <strong class="status-value">12.4k</strong>
+      </div>
+      <div class="status-item">
+        <span class="status-label"><i class="ph ph-briefcase"></i> JDs Indexed</span>
+        <strong class="status-value">4.2k</strong>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main Content -->
+  <main class="main-content">
+    <!-- Top Navbar -->
+    <header class="top-nav">
+      <nav class="nav-tabs">
+        <button class="tab-btn active" data-tab="search">
+          <i class="ph ph-magnifying-glass"></i> Search Comparison
+        </button>
+        <button class="tab-btn" data-tab="dashboard">
+          <i class="ph ph-chart-line-up"></i> Dashboard
+        </button>
+        <button class="tab-btn" data-tab="cv-management">
+          <i class="ph ph-users"></i> CV Management
+        </button>
+        <button class="tab-btn" data-tab="jd-management">
+          <i class="ph ph-buildings"></i> JD Management
+        </button>
+      </nav>
+      <div class="user-profile">
+        <div class="avatar">R</div>
+        <span class="user-name">Recruiter</span>
+      </div>
+    </header>
+
+    <div class="content-scroll-area">
+      <!-- Tab Contents -->
+      <div class="tab-content" id="search-tab">
+        <div class="search-bar-container glass-panel">
+          <div class="search-bar">
+            <div class="select-wrapper target-select-wrapper">
+              <select class="search-target">
+                <option>Search CVs</option>
+                <option>Search JDs</option>
+              </select>
+              <i class="ph ph-caret-down select-icon"></i>
+            </div>
+            <div class="divider"></div>
+            <input type="text" placeholder="I'm looking for a [Senior Designer] with [React] experience in [London]..."
+              class="search-input" value="Python backend developer with Django and REST API experience">
+            <button class="btn-primary">
+              <i class="ph ph-sparkle"></i> Analyze
+            </button>
+          </div>
+
+          <div class="keyword-extraction">
+            <span class="extraction-label">Extracted Vectors:</span>
+            <div class="keyword-chips">
+              <span class="chip chip-sql"><i class="ph ph-database"></i> python</span>
+              <span class="chip chip-sql"><i class="ph ph-database"></i> backend</span>
+              <span class="chip chip-sql"><i class="ph ph-database"></i> django</span>
+              <span class="chip chip-vector"><i class="ph ph-brain"></i> rest_api</span>
+              <span class="chip chip-vector"><i class="ph ph-brain"></i> experience</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="metric-cards">
+          <div class="metric-card">
+            <div class="metric-icon sql-icon"><i class="ph ph-magnifying-glass"></i></div>
+            <div class="metric-data">
+              <div class="metric-label">SQL Matches</div>
+              <div class="metric-value">5</div>
+            </div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-icon vector-icon"><i class="ph ph-brain"></i></div>
+            <div class="metric-data">
+              <div class="metric-label">Vector Matches</div>
+              <div class="metric-value">5</div>
+            </div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-icon sql-icon"><i class="ph ph-timer"></i></div>
+            <div class="metric-data">
+              <div class="metric-label">SQL Query Time</div>
+              <div class="metric-value">12.8 <span class="metric-unit">ms</span></div>
+            </div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-icon vector-icon"><i class="ph ph-timer"></i></div>
+            <div class="metric-data">
+              <div class="metric-label">Vector Query Time</div>
+              <div class="metric-value">8.5 <span class="metric-unit">ms</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="split-view">
+          <!-- SQL Column -->
+          <div class="split-column col-sql">
+            <div class="column-header">
+              <h2 class="column-title">SQL LIKE Strategy</h2>
+              <span class="strategy-badge">OR Fallback</span>
+            </div>
+            <div class="result-list" id="sql-results"></div>
+          </div>
+          <!-- Vector Column -->
+          <div class="split-column col-vector">
+            <div class="column-header">
+              <h2 class="column-title">AI Vector Search</h2>
+              <span class="strategy-badge">Milvus HNSW</span>
+            </div>
+            <div class="result-list" id="vector-results"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tab-content hidden" id="dashboard-tab">
+        <h2 class="page-title">System Performance</h2>
+        <div class="metric-cards mb-4">
+          <div class="metric-card">
+            <div class="metric-label">Total CVs Indexed</div>
+            <div class="metric-value">12,431</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Total JDs Indexed</div>
+            <div class="metric-value">4,285</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Embedding Model</div>
+            <div class="metric-value text-md mt-2">BGE-Small-V1.5</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Vector Dimension</div>
+            <div class="metric-value text-md mt-2">384</div>
+          </div>
+        </div>
+
+        <div class="chart-panel">
+          <div class="chart-header">
+            <h3 class="section-title">Latency Comparison (ms)</h3>
+            <div class="chart-legend">
+              <span class="legend-item"><span class="legend-color sql-color"></span> SQL</span>
+              <span class="legend-item"><span class="legend-color vector-color"></span> Vector</span>
+            </div>
+          </div>
+          <div class="chart-placeholder">
+            <div class="bar-group">
+              <div class="bar bar-sql tooltip" data-tip="12.8ms" style="height: 60%"></div>
+              <div class="bar bar-vector tooltip" data-tip="8.5ms" style="height: 40%"></div><span>Q1</span>
+            </div>
+            <div class="bar-group">
+              <div class="bar bar-sql tooltip" data-tip="6.2ms" style="height: 30%"></div>
+              <div class="bar bar-vector tooltip" data-tip="7.1ms" style="height: 35%"></div><span>Q2</span>
+            </div>
+            <div class="bar-group">
+              <div class="bar bar-sql tooltip" data-tip="6.5ms" style="height: 32%"></div>
+              <div class="bar bar-vector tooltip" data-tip="9.2ms" style="height: 45%"></div><span>Q3</span>
+            </div>
+            <div class="bar-group">
+              <div class="bar bar-sql tooltip" data-tip="4.5ms" style="height: 22%"></div>
+              <div class="bar bar-vector tooltip" data-tip="8.8ms" style="height: 43%"></div><span>Q4</span>
+            </div>
+            <div class="bar-group">
+              <div class="bar bar-sql tooltip" data-tip="7.5ms" style="height: 37%"></div>
+              <div class="bar bar-vector tooltip" data-tip="11.0ms" style="height: 55%"></div><span>Q5</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tab-content hidden" id="cv-management-tab">
+        <div class="page-header">
+          <h2 class="page-title">Candidate Directory</h2>
+          <div class="search-box glass-panel-sm">
+            <i class="ph ph-magnifying-glass search-icon"></i>
+            <input type="text" placeholder="Search by name, skills, or experience..." class="table-search">
+          </div>
+        </div>
+        <div class="data-table-wrapper">
+          <table class="data-table cv-table">
+            <thead>
+              <tr>
+                <th>Candidate ID</th>
+                <th>Primary Role</th>
+                <th>Key Skills</th>
+                <th>Exp. (Yrs)</th>
+                <th>Match Score</th>
+              </tr>
+            </thead>
+            <tbody id="cv-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="tab-content hidden" id="jd-management-tab">
+        <div class="page-header">
+          <h2 class="page-title">Job Descriptions</h2>
+          <div class="search-box glass-panel-sm">
+            <i class="ph ph-magnifying-glass search-icon"></i>
+            <input type="text" placeholder="Search by position or company..." class="table-search">
+          </div>
+        </div>
+        <div class="data-table-wrapper">
+          <table class="data-table jd-table">
+            <thead>
+              <tr>
+                <th>Job ID</th>
+                <th>Position</th>
+                <th>Company</th>
+                <th>Requirements</th>
+                <th>Level</th>
+              </tr>
+            </thead>
+            <tbody id="jd-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+
+</html>
