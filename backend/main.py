@@ -106,52 +106,67 @@ def search(query: str = Query(...), limit: int = 5):
     sql_strategy = "AND"
 
     if keywords:
-        # Weighted scoring: position & keyword field = 2pts each, cv_text & highlights = 1pt each
-        # Max score per keyword = 6pts; total max = len(keywords) * 6
-        field_check = "(cv_text LIKE ? OR position LIKE ? OR highlights LIKE ? OR keyword LIKE ?)"
+        # Weighted score: position=2, keyword field=2, cv_text=1, highlights=1 (max 6 per keyword)
         score_check = (
             "(CASE WHEN position LIKE ? THEN 2 ELSE 0 END"
             " + CASE WHEN keyword LIKE ? THEN 2 ELSE 0 END"
             " + CASE WHEN cv_text LIKE ? THEN 1 ELSE 0 END"
             " + CASE WHEN highlights LIKE ? THEN 1 ELSE 0 END)"
         )
+        # Binary count: 1 if keyword appears in any field, 0 otherwise
+        count_check = (
+            "(CASE WHEN cv_text LIKE ? OR position LIKE ? OR highlights LIKE ? OR keyword LIKE ?"
+            " THEN 1 ELSE 0 END)"
+        )
 
-        and_conditions = " AND ".join(field_check for _ in keywords)
-        or_conditions = " OR ".join(field_check for _ in keywords)
         match_score_expr = " + ".join(score_check for _ in keywords)
-        max_possible = len(keywords) * 6
+        keyword_count_expr = " + ".join(count_check for _ in keywords)
 
-        # Each keyword needs 4 identical like values (%kw%) for both score and WHERE clauses
+        # 4 identical %kw% params per keyword (all fields use same value)
         kw_params = [f'%{kw}%' for kw in keywords for _ in range(4)]
 
-        and_sql = (
+        # Subquery computes weighted score + keyword match count in one pass
+        subquery = (
             f"SELECT id, position, keyword, cv_text, highlights,"
-            f" ({match_score_expr}) AS match_score"
-            f" FROM cvs WHERE {and_conditions}"
+            f" ({match_score_expr}) AS match_score,"
+            f" ({keyword_count_expr}) AS keyword_count"
+            f" FROM cvs"
+        )
+        outer_sql = (
+            f"SELECT id, position, keyword, cv_text, highlights, match_score, keyword_count"
+            f" FROM ({subquery})"
+            f" WHERE keyword_count >= ?"
             f" ORDER BY match_score DESC LIMIT ?"
         )
-        # Params order: score_check placeholders (kw_params) then WHERE placeholders (kw_params)
-        cur.execute(and_sql, kw_params + kw_params + [limit])
-        raw_results = [dict(row) for row in cur.fetchall()]
 
-        if not raw_results:
-            sql_strategy = "OR"
-            or_sql = (
-                f"SELECT id, position, keyword, cv_text, highlights,"
-                f" ({match_score_expr}) AS match_score"
-                f" FROM cvs WHERE {or_conditions}"
-                f" ORDER BY match_score DESC LIMIT ?"
-            )
-            cur.execute(or_sql, kw_params + kw_params + [limit])
+        # 3-tier strategy: AND (all) → PARTIAL (≥2/3) → OR (any 1)
+        # Clamp n_partial so it never exceeds n_all; dedup by numeric threshold value
+        n_all = len(keywords)
+        n_partial = min(n_all, max(2, n_all * 2 // 3))
+        seen: set[int] = set()
+        thresholds = []
+        for n, name in [(n_all, "AND"), (n_partial, "PARTIAL"), (1, "OR")]:
+            if n not in seen:
+                seen.add(n)
+                thresholds.append((n, name))
+
+        for n_required, strategy_name in thresholds:
+            # Params: kw_params for score_check + kw_params for count_check + [n_required, limit]
+            cur.execute(outer_sql, kw_params + kw_params + [n_required, limit])
             raw_results = [dict(row) for row in cur.fetchall()]
+            if raw_results:
+                sql_strategy = strategy_name
+                break
 
+        # Normalize to top result so best match = 100%
+        top_raw = raw_results[0]["match_score"] if raw_results else 1
         for i, row in enumerate(raw_results):
-            score_pct = round(row["match_score"] / max_possible * 100)
+            score_pct = round(row["match_score"] / top_raw * 100) if top_raw > 0 else 0
             sql_results.append({
                 "rank": i + 1,
                 "title": row["position"],
                 "score": str(score_pct),
-                "raw_score": f"{row['match_score']}/{max_possible}",
+                "raw_score": f"{row['keyword_count']}/{len(keywords)} kw",
                 "text": row["cv_text"][:150] + "...",
             })
     sql_time_ms = (time.perf_counter() - sql_start) * 1000
