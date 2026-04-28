@@ -211,3 +211,4 @@ milvus-setup/**
 !milvus-setup/*.ipynb
 !milvus-setup/*.py
 !milvus-setup/*.md
+config.properties

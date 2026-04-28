@@ -1,68 +1,106 @@
 """
 =============================================================
-  Semantic Recruitment Matcher — PostgreSQL Database Setup
+  Semantic Recruitment Matcher - Load Data vao PostgreSQL
 =============================================================
-Script này thực hiện toàn bộ quy trình:
-  1. Load 1000 JDs + 1000 CVs từ HuggingFace
-  2. Clean & chuẩn hoá dữ liệu
-  3. Tạo schema PostgreSQL
-  4. Insert toàn bộ data
+Yeu cau:
+  - Da tao database + schema thu cong trong pgAdmin/psql
+  - Co the dung config.properties hoac bien moi truong PG_*
 
-Chạy: python setup_postgres_db.py
+Chay: python load_data.py
 =============================================================
 """
 
+import os
 import re
 import sys
-import os
+import configparser
 
-# ── Kiểm tra thư viện ──────────────────────────────────────
 try:
     import psycopg2
     from psycopg2.extras import execute_values
 except ImportError:
-    print("[ERROR] Thiếu psycopg2. Chạy: pip install psycopg2-binary")
+    print("[ERROR] Thieu psycopg2. Chay: pip install psycopg2-binary")
     sys.exit(1)
 
 try:
     from datasets import load_dataset
 except ImportError:
-    print("[ERROR] Thiếu datasets. Chạy: pip install datasets")
+    print("[ERROR] Thieu datasets. Chay: pip install datasets")
     sys.exit(1)
 
 
-# ============================================================
-# BƯỚC 1: CẤU HÌNH KẾT NỐI POSTGRESQL
-# ── Sửa các giá trị này cho phù hợp với môi trường của bạn ──
-# ============================================================
-DB_CONFIG = {
-    "host":     os.getenv("PG_HOST",  "localhost"),
-    "port":     int(os.getenv("PG_PORT", "5432")),
-    "dbname":   os.getenv("PG_DB",   "recruitment_db"),
-    "user":     os.getenv("PG_USER", "postgres"),
-    # Nếu pgAdmin không hỏi mật khẩu (trust auth) → để chuỗi rỗng ""
-    # Nếu cần mật khẩu → điền vào hoặc set biến môi trường PG_PASSWORD
-    "password": os.getenv("PG_PASSWORD", "chongcuavy24/7"),
-}
+# =============================================================
+#   Doc config tu config.properties
+# =============================================================
 
-# Số lượng bản ghi cần load
+def load_db_config(config_file: str = "config.properties") -> dict:
+    """Doc thong tin ket noi PostgreSQL tu config file, fallback sang env/default."""
+    config_path = os.path.join(os.path.dirname(__file__), config_file)
+    default_config = {
+        "host": os.getenv("PG_HOST", "localhost"),
+        "port": int(os.getenv("PG_PORT", "5432")),
+        "dbname": os.getenv("PG_DB", "recruitment_db"),
+        "user": os.getenv("PG_USER", "postgres"),
+        "password": os.getenv("PG_PASSWORD", ""),
+    }
+
+    if not os.path.exists(config_path):
+        print(f"[WARN] Khong tim thay file: {config_path}")
+        print("  Dang dung bien moi truong PG_* hoac gia tri mac dinh.")
+        return default_config
+
+    config = configparser.ConfigParser()
+    try:
+        config.read(config_path, encoding="utf-8")
+    except configparser.MissingSectionHeaderError:
+        with open(config_path, "r", encoding="utf-8") as f:
+            raw_config = f.read()
+        config.read_string("[postgresql]\n" + raw_config)
+
+    if "postgresql" not in config:
+        print("[WARN] File config.properties thieu section [postgresql]")
+        print("  Dang dung bien moi truong PG_* hoac gia tri mac dinh.")
+        return default_config
+
+    pg = config["postgresql"]
+    return {
+        "host": pg.get("host", default_config["host"]),
+        "port": int(pg.get("port", str(default_config["port"]))),
+        "dbname": pg.get("dbname", default_config["dbname"]),
+        "user": pg.get("user", default_config["user"]),
+        "password": pg.get("password", default_config["password"]),
+    }
+
+
+# =============================================================
+#   Gioi han so luong ban ghi load
+# =============================================================
+
 JD_LIMIT = 1000
 CV_LIMIT = 1000
 
 
-# ============================================================
-# BƯỚC 2: HÀM TIỆN ÍCH — CLEAN DATA
-# ============================================================
+# =============================================================
+#   Ham lam sach du lieu
+# =============================================================
+
 def clean_text(text) -> str:
-    """Xử lý null + khoảng trắng thừa"""
+    """Xu ly null va khoang trang thua."""
     if not text or not isinstance(text, str):
         return ""
-    return re.sub(r'\s+', ' ', text).strip()
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def clean_scalar(value) -> str:
+    """Chuan hoa scalar, doi None thanh chuoi rong."""
+    if value is None:
+        return ""
+    return clean_text(str(value))
 
 
 def truncate(text: str, max_chars: int) -> str:
-    """Cắt tại ranh giới từ, không đứt giữa chữ"""
-    if not text:                  # ← Fix: xử lý None / ""
+    """Cat tai ranh gioi tu, khong dut giua chu."""
+    if not text:
         return ""
     if len(text) <= max_chars:
         return text
@@ -71,146 +109,88 @@ def truncate(text: str, max_chars: int) -> str:
     return cut[:last_space] if last_space > 0 else cut
 
 
-# ============================================================
-# BƯỚC 3: LOAD VÀ CLEAN DATASET TỪ HUGGINGFACE
-# ============================================================
-def load_and_clean_datasets():
-    print("\n[1/4] Đang load dataset từ HuggingFace...")
+def sanitize_jd_row(item: dict):
+    """Lam sach 1 JD truoc khi insert. Tra ve None neu description qua ngan."""
+    description = truncate(clean_scalar(item.get("Long Description")), 3000)
+    if len(description) < 20:
+        return None
 
-    # Load JDs — lấy tối đa JD_LIMIT bản ghi từ tập train
+    return {
+        "position":    truncate(clean_scalar(item.get("Position"))    or "Unknown Position", 300),
+        "description": description,
+        "company":     truncate(clean_scalar(item.get("Company Name")) or "Unknown Company",  200),
+        "keyword":     truncate(clean_scalar(item.get("Primary Keyword")),                    300),
+        "exp_years":   truncate(clean_scalar(item.get("Exp Years")),                           50),
+    }
+
+
+def sanitize_cv_row(item: dict):
+    """Lam sach 1 CV truoc khi insert. Tra ve None neu cv_text qua ngan."""
+    cv_text = truncate(clean_scalar(item.get("CV")), 3000)
+    if len(cv_text) < 20:
+        return None
+
+    return {
+        "position":    truncate(clean_scalar(item.get("Position"))         or "Unknown Position", 300),
+        "cv_text":     cv_text,
+        "highlights":  truncate(clean_scalar(item.get("Highlights")),                            1000),
+        "keyword":     truncate(clean_scalar(item.get("Primary Keyword")),                        300),
+        "exp_years":   truncate(clean_scalar(item.get("Experience Years")),                        50),
+        "looking_for": truncate(clean_scalar(item.get("Looking For")),                            500),
+    }
+
+
+# =============================================================
+#   Load va clean dataset tu HuggingFace
+# =============================================================
+
+def load_and_clean_datasets():
+    print("\n[1/3] Dang load dataset tu HuggingFace...")
+
     jd_raw = load_dataset(
         "lang-uk/recruitment-dataset-job-descriptions-english",
-        split=f"train[:{JD_LIMIT}]"
+        split=f"train[:{JD_LIMIT}]",
     )
-
-    # Load CVs — lấy tối đa CV_LIMIT bản ghi từ tập train
     cv_raw = load_dataset(
         "lang-uk/recruitment-dataset-candidate-profiles-english",
-        split=f"train[:{CV_LIMIT}]"
+        split=f"train[:{CV_LIMIT}]",
     )
 
-    print(f"   Raw JDs: {len(jd_raw)} | Raw CVs: {len(cv_raw)}")
-    print(f"   JD columns: {jd_raw.column_names}")
-    print(f"   CV columns: {cv_raw.column_names}")
+    print(f"   Raw JDs : {len(jd_raw)} ban ghi | columns: {jd_raw.column_names}")
+    print(f"   Raw CVs : {len(cv_raw)} ban ghi | columns: {cv_raw.column_names}")
 
-    # ── Clean JDs ──────────────────────────────────────────
-    print("\n[2/4] Đang clean data...")
-    cleaned_jd = []
-    skipped_jd = 0
+    print("\n[2/3] Dang clean data...")
 
-    for i, item in enumerate(jd_raw):
-        description = clean_text(item.get("Long Description"))
-
-        # Bỏ qua JD rỗng hoặc quá ngắn (< 20 ký tự)
-        if len(description) < 20:
+    cleaned_jd, skipped_jd = [], 0
+    for item in jd_raw:
+        row = sanitize_jd_row(item)
+        if row is None:
             skipped_jd += 1
-            continue
+        else:
+            cleaned_jd.append(row)
 
-        cleaned_jd.append({
-            "id":          i + 1,
-            "position":    truncate(clean_text(item.get("Position")) or "Unknown Position", 300),
-            "description": truncate(description, 3000),
-            "company":     truncate(clean_text(item.get("Company Name")) or "Unknown Company", 200),
-            "keyword":     truncate(clean_text(item.get("Primary Keyword")) or "", 300),
-            "exp_years":   truncate(clean_text(str(item.get("Exp Years") or "")), 50),
-        })
-
-    # ── Clean CVs ──────────────────────────────────────────
-    cleaned_cv = []
-    skipped_cv = 0
-
-    for i, item in enumerate(cv_raw):
-        cv_text = clean_text(item.get("CV"))
-
-        # Bỏ qua CV rỗng hoặc quá ngắn
-        if len(cv_text) < 20:
+    cleaned_cv, skipped_cv = [], 0
+    for item in cv_raw:
+        row = sanitize_cv_row(item)
+        if row is None:
             skipped_cv += 1
-            continue
+        else:
+            cleaned_cv.append(row)
 
-        cleaned_cv.append({
-            "id":           i + 1,
-            "position":     truncate(clean_text(item.get("Position")) or "Unknown Position", 300),
-            "cv_text":      truncate(cv_text, 3000),
-            "highlights":   truncate(clean_text(item.get("Highlights")) or "", 1000),
-            "keyword":      truncate(clean_text(item.get("Primary Keyword")) or "", 300),
-            "exp_years":    truncate(clean_text(str(item.get("Experience Years") or "")), 50),
-            "looking_for":  truncate(clean_text(item.get("Looking For")) or "", 500),
-        })
-
-    print(f"   JD: giữ {len(cleaned_jd)}, bỏ {skipped_jd} (rỗng/ngắn)")
-    print(f"   CV: giữ {len(cleaned_cv)}, bỏ {skipped_cv} (rỗng/ngắn)")
+    print(f"   JD: giu {len(cleaned_jd)}, bo {skipped_jd} (rong/qua ngan)")
+    print(f"   CV: giu {len(cleaned_cv)}, bo {skipped_cv} (rong/qua ngan)")
 
     return cleaned_jd, cleaned_cv
 
 
-# ============================================================
-# BƯỚC 4: TẠO SCHEMA TRONG POSTGRESQL
-# ============================================================
-CREATE_JD_TABLE = """
-CREATE TABLE IF NOT EXISTS job_descriptions (
-    id          SERIAL      PRIMARY KEY,
-    position    VARCHAR(300)    NOT NULL DEFAULT '',
-    description TEXT            NOT NULL,
-    company     VARCHAR(200)    NOT NULL DEFAULT '',
-    keyword     VARCHAR(300)    NOT NULL DEFAULT '',
-    exp_years   VARCHAR(50)     NOT NULL DEFAULT '',
-    created_at  TIMESTAMP       DEFAULT NOW()
-);
-"""
+# =============================================================
+#   Insert du lieu vao PostgreSQL
+# =============================================================
 
-CREATE_CV_TABLE = """
-CREATE TABLE IF NOT EXISTS cvs (
-    id          SERIAL      PRIMARY KEY,
-    position    VARCHAR(300)    NOT NULL DEFAULT '',
-    cv_text     TEXT            NOT NULL,
-    highlights  TEXT            NOT NULL DEFAULT '',
-    keyword     VARCHAR(300)    NOT NULL DEFAULT '',
-    exp_years   VARCHAR(50)     NOT NULL DEFAULT '',
-    looking_for TEXT            NOT NULL DEFAULT '',
-    created_at  TIMESTAMP       DEFAULT NOW()
-);
-"""
+def insert_data(cur, cleaned_jd: list, cleaned_cv: list):
+    print("\n[3/3] Dang insert data vao PostgreSQL...")
 
-# psycopg2 chỉ chạy được 1 câu SQL mỗi lần cur.execute()
-# → phải tách thành list, không gom chung 1 string
-CREATE_INDEXES = [
-    "CREATE INDEX IF NOT EXISTS idx_jd_position ON job_descriptions USING gin(to_tsvector('english', position))",
-    "CREATE INDEX IF NOT EXISTS idx_jd_keyword  ON job_descriptions USING gin(to_tsvector('english', keyword))",
-    "CREATE INDEX IF NOT EXISTS idx_jd_desc     ON job_descriptions USING gin(to_tsvector('english', description))",
-    "CREATE INDEX IF NOT EXISTS idx_cv_position ON cvs USING gin(to_tsvector('english', position))",
-    "CREATE INDEX IF NOT EXISTS idx_cv_keyword  ON cvs USING gin(to_tsvector('english', keyword))",
-    "CREATE INDEX IF NOT EXISTS idx_cv_text     ON cvs USING gin(to_tsvector('english', cv_text))",
-]
-
-
-def setup_schema(cur):
-    """Tạo tables và indexes trong PostgreSQL"""
-    print("\n[3/4] Đang tạo schema...")
-
-    cur.execute("DROP TABLE IF EXISTS job_descriptions CASCADE;")
-    cur.execute("DROP TABLE IF EXISTS cvs CASCADE;")
-    print("   Dropped tables cũ (nếu có)")
-
-    cur.execute(CREATE_JD_TABLE)
-    print("   ✓ Tạo bảng job_descriptions")
-
-    cur.execute(CREATE_CV_TABLE)
-    print("   ✓ Tạo bảng cvs")
-
-    # Chạy từng câu CREATE INDEX riêng lẻ
-    for sql in CREATE_INDEXES:
-        cur.execute(sql)
-    print("   ✓ Tạo 6 GIN indexes cho full-text search")
-
-
-# ============================================================
-# BƯỚC 5: INSERT DATA VÀO POSTGRESQL
-# ============================================================
-def insert_data(cur, cleaned_jd, cleaned_cv):
-    """Insert toàn bộ data dùng execute_values (batch insert nhanh)"""
-    print("\n[4/4] Đang insert data...")
-
-    # ── Insert JDs ─────────────────────────────────────────
+    # --- Job Descriptions ---
     jd_rows = [
         (
             item["position"],
@@ -221,18 +201,20 @@ def insert_data(cur, cleaned_jd, cleaned_cv):
         )
         for item in cleaned_jd
     ]
-    execute_values(
-        cur,
-        """
-        INSERT INTO job_descriptions (position, description, company, keyword, exp_years)
-        VALUES %s
-        """,
-        jd_rows,
-        page_size=200  # Insert 200 hàng mỗi batch
-    )
-    print(f"   ✓ Inserted {len(jd_rows)} job descriptions")
 
-    # ── Insert CVs ─────────────────────────────────────────
+    if jd_rows:
+        execute_values(
+            cur,
+            """
+            INSERT INTO job_descriptions (position, description, company, keyword, exp_years)
+            VALUES %s
+            """,
+            jd_rows,
+            page_size=200,
+        )
+    print(f"   Inserted {len(jd_rows)} job descriptions")
+
+    # --- CVs ---
     cv_rows = [
         (
             item["position"],
@@ -244,26 +226,28 @@ def insert_data(cur, cleaned_jd, cleaned_cv):
         )
         for item in cleaned_cv
     ]
-    execute_values(
-        cur,
-        """
-        INSERT INTO cvs (position, cv_text, highlights, keyword, exp_years, looking_for)
-        VALUES %s
-        """,
-        cv_rows,
-        page_size=200
-    )
-    print(f"   ✓ Inserted {len(cv_rows)} candidate CVs")
+
+    if cv_rows:
+        execute_values(
+            cur,
+            """
+            INSERT INTO cvs (position, cv_text, highlights, keyword, exp_years, looking_for)
+            VALUES %s
+            """,
+            cv_rows,
+            page_size=200,
+        )
+    print(f"   Inserted {len(cv_rows)} candidate CVs")
 
 
-# ============================================================
-# BƯỚC 6: VERIFY — KIỂM TRA KẾT QUẢ SAU KHI INSERT
-# ============================================================
+# =============================================================
+#   Verify du lieu sau khi insert
+# =============================================================
+
 def verify_data(cur):
-    """Chạy một số query kiểm tra để xác nhận data đã vào đúng"""
-    print("\n" + "="*55)
-    print("  VERIFY — Kiểm tra data trong PostgreSQL")
-    print("="*55)
+    print("\n" + "=" * 55)
+    print("  VERIFY - Kiem tra data trong PostgreSQL")
+    print("=" * 55)
 
     cur.execute("SELECT COUNT(*) FROM job_descriptions;")
     jd_count = cur.fetchone()[0]
@@ -271,71 +255,79 @@ def verify_data(cur):
     cur.execute("SELECT COUNT(*) FROM cvs;")
     cv_count = cur.fetchone()[0]
 
-    print(f"\n  Tổng job_descriptions : {jd_count}")
-    print(f"  Tổng cvs              : {cv_count}")
+    print(f"\n  Tong job_descriptions : {jd_count}")
+    print(f"  Tong cvs              : {cv_count}")
 
-    # Sample JD
-    print("\n  -- Sample JD (3 bản ghi đầu) --")
+    print("\n  -- Sample JD (3 ban ghi dau) --")
     cur.execute("SELECT id, position, company, keyword, exp_years FROM job_descriptions LIMIT 3;")
     for row in cur.fetchall():
         print(f"   [{row[0]}] {row[1][:40]} | {row[2][:25]} | kw: {row[3][:20]} | exp: {row[4]}")
 
-    # Sample CV
-    print("\n  -- Sample CV (3 bản ghi đầu) --")
+    print("\n  -- Sample CV (3 ban ghi dau) --")
     cur.execute("SELECT id, position, keyword, exp_years FROM cvs LIMIT 3;")
     for row in cur.fetchall():
         print(f"   [{row[0]}] {row[1][:40]} | kw: {row[2][:20]} | exp: {row[3]}")
 
-    # Demo LIKE query
-    print("\n  -- Demo SQL LIKE query: tìm CV có 'Python' --")
-    cur.execute("""
-        SELECT id, position, keyword, cv_text
+    print("\n  -- Demo Full-text search: tim CV co 'Python' --")
+    cur.execute(
+        """
+        SELECT id, position, keyword
         FROM cvs
-        WHERE cv_text ILIKE '%python%'
-           OR keyword ILIKE '%python%'
+        WHERE to_tsvector('english', cv_text) @@ to_tsquery('english', 'python')
         LIMIT 5;
-    """)
+        """
+    )
     rows = cur.fetchall()
-    print(f"  Tìm thấy (top 5 / tổng nhiều hơn): {len(rows)} kết quả")
+    print(f"  Tim thay {len(rows)} ket qua (top 5)")
     for row in rows:
-        print(f"   [{row[0]}] {row[1][:35]} | {row[2][:25]}")
+        print(f"   [{row[0]}] {row[1][:40]} | kw: {row[2][:25]}")
 
-    print("\n  ✅ Database sẵn sàng sử dụng!")
-    print(f"     Host: {DB_CONFIG['host']}:{DB_CONFIG['port']}")
-    print(f"     DB  : {DB_CONFIG['dbname']}")
-    print(f"     User: {DB_CONFIG['user']}")
+    print("\n  Data da san sang!")
 
 
-# ============================================================
-# MAIN
-# ============================================================
+# =============================================================
+#   Main
+# =============================================================
+
 def main():
-    print("="*55)
-    print("  Recruitment DB Setup — PostgreSQL")
+    print("=" * 55)
+    print("  Recruitment DB - Load Data")
     print(f"  Target: {JD_LIMIT} JDs + {CV_LIMIT} CVs")
-    print("="*55)
+    print("=" * 55)
 
-    # Load + clean data
+    # Doc config
+    db_config = load_db_config("config.properties")
+
+    # Load + clean data truoc khi ket noi DB
     cleaned_jd, cleaned_cv = load_and_clean_datasets()
 
-    # Kết nối PostgreSQL
-    print(f"\n   Connecting to PostgreSQL: {DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['dbname']}...")
+    # Ket noi PostgreSQL
+    print(f"\n  Connecting: {db_config['host']}:{db_config['port']}/{db_config['dbname']}...")
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
+        conn = psycopg2.connect(**db_config)
         conn.autocommit = False
         cur = conn.cursor()
-        print("   ✓ Kết nối thành công")
+        print("  Connected thanh cong!")
     except psycopg2.OperationalError as e:
-        print(f"\n[ERROR] Không kết nối được PostgreSQL:\n  {e}")
-        print("\nKiểm tra lại DB_CONFIG ở đầu file hoặc biến môi trường:")
-        print("  PG_HOST / PG_PORT / PG_DB / PG_USER / PG_PASSWORD")
+        print(f"\n[ERROR] Khong ket noi duoc PostgreSQL:\n  {e}")
+        print("\nKiem tra lai config.properties:")
+        print("  host / port / dbname / user / password")
         sys.exit(1)
 
+    # Insert + verify
     try:
-        setup_schema(cur)
-        insert_data(cur, cleaned_jd, cleaned_cv)
-        conn.commit()
+        # Kiem tra bang co du lieu chua de tranh insert trung
+        cur.execute("SELECT COUNT(*) FROM job_descriptions;")
+        existing = cur.fetchone()[0]
+        if existing > 0:
+            print(f"\n  [SKIP] Bang job_descriptions da co {existing} ban ghi.")
+            print("  Xoa data cu truoc neu muon load lai: TRUNCATE job_descriptions, cvs;")
+        else:
+            insert_data(cur, cleaned_jd, cleaned_cv)
+            conn.commit()
+
         verify_data(cur)
+
     except Exception as e:
         conn.rollback()
         print(f"\n[ERROR] {e}")
@@ -343,7 +335,7 @@ def main():
     finally:
         cur.close()
         conn.close()
-        print("\n   Connection closed.")
+        print("\n  Connection closed.")
 
 
 if __name__ == "__main__":
