@@ -1,9 +1,11 @@
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import sqlite3
 import time
 import re
+import os
 from datasets import load_dataset
 from sentence_transformers import SentenceTransformer
 from pymilvus import connections, Collection
@@ -22,6 +24,8 @@ conn = None
 cur = None
 model = None
 cv_col = None
+cv_count = 0
+milvus_connected = False
 
 def clean_text(text):
     if not text or not isinstance(text, str): return ""
@@ -42,9 +46,10 @@ def extract_keywords(query: str) -> list[str]:
 
 @app.on_event("startup")
 def startup_event():
-    global conn, cur, model, cv_col
+    global conn, cur, model, cv_col, cv_count, milvus_connected
     print("Loading datasets...")
-    cv_data = load_dataset("lang-uk/recruitment-dataset-candidate-profiles-english", split="train[:300]")
+    # Match the 1000-CV count already indexed in Milvus (see datasets_v2.ipynb)
+    cv_data = load_dataset("lang-uk/recruitment-dataset-candidate-profiles-english", split="train[:1000]")
 
     cleaned_cv = []
     for i, item in enumerate(cv_data):
@@ -75,6 +80,8 @@ def startup_event():
         cleaned_cv
     )
     conn.commit()
+    cv_count = len(cleaned_cv)
+    print(f"SQLite ready: {cv_count} CVs")
 
     print("Loading SentenceTransformer model...")
     model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
@@ -84,8 +91,27 @@ def startup_event():
         connections.connect(host="localhost", port="19530")
         cv_col = Collection("cvs")
         cv_col.load()
+        milvus_connected = True
+        print("Milvus connected.")
     except Exception as e:
         print(f"Milvus connection error: {e}")
+        milvus_connected = False
+
+
+# ── Status endpoint ─────────────────────────────────────────────────────────
+
+@app.get("/api/status")
+def status():
+    return {
+        "cv_count": cv_count,
+        "milvus_connected": milvus_connected,
+        "sql_engine": "SQLite (in-memory)",
+        "embedding_model": "paraphrase-multilingual-MiniLM-L12-v2",
+        "vector_dim": 384,
+    }
+
+
+# ── Search endpoint ──────────────────────────────────────────────────────────
 
 class SearchResponse(BaseModel):
     query: str
@@ -103,17 +129,16 @@ def search(query: str = Query(...), limit: int = 5):
     # --- SQL LIKE SEARCH ---
     sql_start = time.perf_counter()
     sql_results = []
-    sql_strategy = "AND"
+    sql_strategy = "N/A"
+    raw_results = []
 
     if keywords:
-        # Weighted score: position=2, keyword field=2, cv_text=1, highlights=1 (max 6 per keyword)
         score_check = (
             "(CASE WHEN position LIKE ? THEN 2 ELSE 0 END"
             " + CASE WHEN keyword LIKE ? THEN 2 ELSE 0 END"
             " + CASE WHEN cv_text LIKE ? THEN 1 ELSE 0 END"
             " + CASE WHEN highlights LIKE ? THEN 1 ELSE 0 END)"
         )
-        # Binary count: 1 if keyword appears in any field, 0 otherwise
         count_check = (
             "(CASE WHEN cv_text LIKE ? OR position LIKE ? OR highlights LIKE ? OR keyword LIKE ?"
             " THEN 1 ELSE 0 END)"
@@ -121,11 +146,8 @@ def search(query: str = Query(...), limit: int = 5):
 
         match_score_expr = " + ".join(score_check for _ in keywords)
         keyword_count_expr = " + ".join(count_check for _ in keywords)
-
-        # 4 identical %kw% params per keyword (all fields use same value)
         kw_params = [f'%{kw}%' for kw in keywords for _ in range(4)]
 
-        # Subquery computes weighted score + keyword match count in one pass
         subquery = (
             f"SELECT id, position, keyword, cv_text, highlights,"
             f" ({match_score_expr}) AS match_score,"
@@ -139,8 +161,6 @@ def search(query: str = Query(...), limit: int = 5):
             f" ORDER BY match_score DESC LIMIT ?"
         )
 
-        # 3-tier strategy: AND (all) → PARTIAL (≥2/3) → OR (any 1)
-        # Clamp n_partial so it never exceeds n_all; dedup by numeric threshold value
         n_all = len(keywords)
         n_partial = min(n_all, max(2, n_all * 2 // 3))
         seen: set[int] = set()
@@ -151,17 +171,17 @@ def search(query: str = Query(...), limit: int = 5):
                 thresholds.append((n, name))
 
         for n_required, strategy_name in thresholds:
-            # Params: kw_params for score_check + kw_params for count_check + [n_required, limit]
             cur.execute(outer_sql, kw_params + kw_params + [n_required, limit])
             raw_results = [dict(row) for row in cur.fetchall()]
             if raw_results:
                 sql_strategy = strategy_name
                 break
 
-        # Normalize to top result so best match = 100%
-        top_raw = raw_results[0]["match_score"] if raw_results else 1
+        # Absolute scoring: max possible = 6 pts/keyword
+        # (position=2, keyword_field=2, cv_text=1, highlights=1)
+        max_possible = 6 * len(keywords)
         for i, row in enumerate(raw_results):
-            score_pct = round(row["match_score"] / top_raw * 100) if top_raw > 0 else 0
+            score_pct = round(row["match_score"] / max_possible * 100) if max_possible > 0 else 0
             sql_results.append({
                 "rank": i + 1,
                 "title": row["position"],
@@ -169,6 +189,7 @@ def search(query: str = Query(...), limit: int = 5):
                 "raw_score": f"{row['keyword_count']}/{len(keywords)} kw",
                 "text": row["cv_text"][:150] + "...",
             })
+
     sql_time_ms = (time.perf_counter() - sql_start) * 1000
 
     # --- MILVUS VECTOR SEARCH ---
@@ -186,16 +207,13 @@ def search(query: str = Query(...), limit: int = 5):
 
         hits = v_res[0]
         if hits:
-            # Clip negatives then normalize relative to top result so best hit = 100%
-            raw_scores = [max(0.0, hit.score) for hit in hits]
-            top_score = raw_scores[0] if raw_scores[0] > 0 else 1.0
-
-            for i, (hit, raw) in enumerate(zip(hits, raw_scores)):
-                normalized = round(raw / top_score * 100)
+            for i, hit in enumerate(hits):
+                # Cosine similarity is already in [0, 1] — map directly to %
+                score_pct = round(max(0.0, hit.score) * 100)
                 vector_results.append({
                     "rank": i + 1,
                     "title": hit.entity.get("position"),
-                    "score": str(normalized),
+                    "score": str(score_pct),
                     "raw_score": f"{hit.score:.4f}",
                     "text": hit.entity.get("cv_text")[:150] + "...",
                 })
@@ -210,3 +228,12 @@ def search(query: str = Query(...), limit: int = 5):
         "sql_results": sql_results,
         "vector_results": vector_results,
     }
+
+
+# ── Serve frontend as static files (fixes file:// CORS issue) ───────────────
+# Open http://localhost:8001 instead of opening index.html directly
+
+_ui_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "semantic-matcher-ui"))
+
+if os.path.isdir(_ui_dir):
+    app.mount("/", StaticFiles(directory=_ui_dir, html=True), name="frontend")

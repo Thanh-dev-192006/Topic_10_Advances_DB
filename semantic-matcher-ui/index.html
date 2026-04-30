@@ -32,33 +32,14 @@
       <div class="sidebar-title">Search Mode</div>
       <div class="select-wrapper">
         <select class="form-select">
-          <option>CVs by JD query</option>
-          <option>JDs by CV query</option>
+          <option>CVs by Job Description</option>
         </select>
         <i class="ph ph-caret-down select-icon"></i>
       </div>
     </div>
 
     <div class="sidebar-section">
-      <div class="sidebar-title">Filters</div>
-      <div class="select-wrapper mb-3">
-        <select class="form-select">
-          <option>All Industries</option>
-          <option>IT / Software</option>
-          <option>Design</option>
-        </select>
-        <i class="ph ph-caret-down select-icon"></i>
-      </div>
-      <div class="select-wrapper">
-        <select class="form-select">
-          <option>Any Experience</option>
-          <option>0-2 Years</option>
-          <option>3-5 Years</option>
-          <option>5+ Years</option>
-        </select>
-        <i class="ph ph-caret-down select-icon"></i>
-      </div>
-
+      <div class="sidebar-title">Results</div>
       <div class="sidebar-label">Top-N Results: <span id="topNValue">5</span></div>
       <input type="range" min="1" max="20" value="5" class="form-range" id="topNRange">
     </div>
@@ -66,11 +47,15 @@
     <div class="data-status">
       <div class="status-item">
         <span class="status-label"><i class="ph ph-file-text"></i> CVs Indexed</span>
-        <strong class="status-value">12.4k</strong>
+        <strong class="status-value" id="status-cv-count">...</strong>
       </div>
       <div class="status-item">
-        <span class="status-label"><i class="ph ph-briefcase"></i> JDs Indexed</span>
-        <strong class="status-value">4.2k</strong>
+        <span class="status-label"><i class="ph ph-brain"></i> Vector DB</span>
+        <strong class="status-value" id="status-milvus">...</strong>
+      </div>
+      <div class="status-item">
+        <span class="status-label"><i class="ph ph-database"></i> SQL Engine</span>
+        <strong class="status-value">SQLite</strong>
       </div>
     </div>
   </aside>
@@ -102,31 +87,27 @@
     <div class="content-scroll-area">
       <!-- Tab Contents -->
       <div class="tab-content" id="search-tab">
+        <div id="errorBanner" style="display:none; background:#ffdad6; color:#93000a; padding:14px 20px; border-radius:12px; margin-bottom:24px; font-size:0.9rem; line-height:1.5;"></div>
         <div class="search-bar-container glass-panel">
           <div class="search-bar">
             <div class="select-wrapper target-select-wrapper">
               <select class="search-target">
                 <option>Search CVs</option>
-                <option>Search JDs</option>
               </select>
               <i class="ph ph-caret-down select-icon"></i>
             </div>
             <div class="divider"></div>
-            <input type="text" placeholder="I'm looking for a [Senior Designer] with [React] experience in [London]..."
-              class="search-input" value="Python backend developer with Django and REST API experience">
-            <button class="btn-primary">
+            <input type="text" placeholder="e.g. Python backend developer with Django and REST API experience"
+              class="search-input" id="searchInput">
+            <button class="btn-primary" id="analyzeBtn">
               <i class="ph ph-sparkle"></i> Analyze
             </button>
           </div>
 
           <div class="keyword-extraction">
-            <span class="extraction-label">Extracted Vectors:</span>
-            <div class="keyword-chips">
-              <span class="chip chip-sql"><i class="ph ph-database"></i> python</span>
-              <span class="chip chip-sql"><i class="ph ph-database"></i> backend</span>
-              <span class="chip chip-sql"><i class="ph ph-database"></i> django</span>
-              <span class="chip chip-vector"><i class="ph ph-brain"></i> rest_api</span>
-              <span class="chip chip-vector"><i class="ph ph-brain"></i> experience</span>
+            <span class="extraction-label">Extracted Keywords (SQL):</span>
+            <div class="keyword-chips" id="keywordChips">
+              <span class="chip chip-sql" style="opacity:0.4; font-style:italic">keywords appear after search...</span>
             </div>
           </div>
         </div>
@@ -136,28 +117,28 @@
             <div class="metric-icon sql-icon"><i class="ph ph-magnifying-glass"></i></div>
             <div class="metric-data">
               <div class="metric-label">SQL Matches</div>
-              <div class="metric-value">5</div>
+              <div class="metric-value" id="m-sql-count">—</div>
             </div>
           </div>
           <div class="metric-card">
             <div class="metric-icon vector-icon"><i class="ph ph-brain"></i></div>
             <div class="metric-data">
               <div class="metric-label">Vector Matches</div>
-              <div class="metric-value">5</div>
+              <div class="metric-value" id="m-vec-count">—</div>
             </div>
           </div>
           <div class="metric-card">
             <div class="metric-icon sql-icon"><i class="ph ph-timer"></i></div>
             <div class="metric-data">
               <div class="metric-label">SQL Query Time</div>
-              <div class="metric-value">12.8 <span class="metric-unit">ms</span></div>
+              <div class="metric-value" id="m-sql-time">— <span class="metric-unit">ms</span></div>
             </div>
           </div>
           <div class="metric-card">
             <div class="metric-icon vector-icon"><i class="ph ph-timer"></i></div>
             <div class="metric-data">
               <div class="metric-label">Vector Query Time</div>
-              <div class="metric-value">8.5 <span class="metric-unit">ms</span></div>
+              <div class="metric-value" id="m-vec-time">— <span class="metric-unit">ms</span></div>
             </div>
           </div>
         </div>
@@ -187,19 +168,19 @@
         <div class="metric-cards mb-4">
           <div class="metric-card">
             <div class="metric-label">Total CVs Indexed</div>
-            <div class="metric-value">12,431</div>
+            <div class="metric-value" id="dash-cv-count">...</div>
           </div>
           <div class="metric-card">
-            <div class="metric-label">Total JDs Indexed</div>
-            <div class="metric-value">4,285</div>
+            <div class="metric-label">Vector Database</div>
+            <div class="metric-value text-md mt-2">Milvus</div>
           </div>
           <div class="metric-card">
             <div class="metric-label">Embedding Model</div>
-            <div class="metric-value text-md mt-2">BGE-Small-V1.5</div>
+            <div class="metric-value text-md mt-2" id="dash-model" style="font-size:0.95rem">...</div>
           </div>
           <div class="metric-card">
             <div class="metric-label">Vector Dimension</div>
-            <div class="metric-value text-md mt-2">384</div>
+            <div class="metric-value text-md mt-2" id="dash-dim">384</div>
           </div>
         </div>
 
@@ -261,26 +242,11 @@
       </div>
 
       <div class="tab-content hidden" id="jd-management-tab">
-        <div class="page-header">
-          <h2 class="page-title">Job Descriptions</h2>
-          <div class="search-box glass-panel-sm">
-            <i class="ph ph-magnifying-glass search-icon"></i>
-            <input type="text" placeholder="Search by position or company..." class="table-search">
-          </div>
-        </div>
-        <div class="data-table-wrapper">
-          <table class="data-table jd-table">
-            <thead>
-              <tr>
-                <th>Job ID</th>
-                <th>Position</th>
-                <th>Company</th>
-                <th>Requirements</th>
-                <th>Level</th>
-              </tr>
-            </thead>
-            <tbody id="jd-tbody"></tbody>
-          </table>
+        <h2 class="page-title">Job Descriptions</h2>
+        <div class="empty-state" style="margin-top: 60px; padding: 80px 40px; border-radius: 16px; background: var(--surface-container-lowest);">
+          <i class="ph ph-buildings" style="font-size: 3rem; color: var(--on-surface-variant); opacity: 0.4; display: block; margin-bottom: 16px;"></i>
+          <p style="font-size: 1.1rem; margin-bottom: 8px; color: var(--on-surface-variant);">JD Management not yet available</p>
+          <p style="font-size: 0.875rem; color: var(--on-surface-variant); opacity: 0.7;">The backend currently only indexes CV data. JD support will be added in a future version.</p>
         </div>
       </div>
     </div>

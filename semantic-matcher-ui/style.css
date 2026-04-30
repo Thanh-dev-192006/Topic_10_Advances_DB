@@ -455,6 +455,10 @@ h1, h2, h3, .metric-value, .column-title, .result-title, .page-title {
   color: var(--on-tertiary-container);
   box-shadow: inset 0 0 0 2px var(--tertiary-fixed);
 }
+/* Score tier colours — applied via JS based on actual percentage */
+.score-badge.score-high   { background:#d2f8e2; color:#004d34; box-shadow:inset 0 0 0 2px #6ffbbe; }
+.score-badge.score-medium { background:#fff3cd; color:#7a4f00; box-shadow:inset 0 0 0 2px #ffc107; }
+.score-badge.score-low    { background:#ffdad6; color:#93000a; box-shadow:inset 0 0 0 2px #ff8a80; }
 .raw-score {
   font-size: 0.75rem;
   color: var(--on-surface-variant);

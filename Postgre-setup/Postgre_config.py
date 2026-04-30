@@ -1,12 +1,12 @@
 """
 =============================================================
-  Semantic Recruitment Matcher - Load Data vao PostgreSQL
+  Semantic Recruitment Matcher - Load Data into PostgreSQL
 =============================================================
-Yeu cau:
-  - Da tao database + schema thu cong trong pgAdmin/psql
-  - Co the dung config.properties hoac bien moi truong PG_*
+Requirements:
+  - Database and schema already exist
+  - Use config.properties or PG_* env vars
 
-Chay: python load_data.py
+Run: python load_data.py
 =============================================================
 """
 
@@ -19,22 +19,22 @@ try:
     import psycopg2
     from psycopg2.extras import execute_values
 except ImportError:
-    print("[ERROR] Thieu psycopg2. Chay: pip install psycopg2-binary")
+    print("[ERROR] Missing psycopg2. Run: pip install psycopg2-binary")
     sys.exit(1)
 
 try:
     from datasets import load_dataset
 except ImportError:
-    print("[ERROR] Thieu datasets. Chay: pip install datasets")
+    print("[ERROR] Missing datasets. Run: pip install datasets")
     sys.exit(1)
 
 
 # =============================================================
-#   Doc config tu config.properties
+#   Load config
 # =============================================================
 
 def load_db_config(config_file: str = "config.properties") -> dict:
-    """Doc thong tin ket noi PostgreSQL tu config file, fallback sang env/default."""
+    """Load PostgreSQL config."""
     config_path = os.path.join(os.path.dirname(__file__), config_file)
     default_config = {
         "host": os.getenv("PG_HOST", "localhost"),
@@ -45,8 +45,8 @@ def load_db_config(config_file: str = "config.properties") -> dict:
     }
 
     if not os.path.exists(config_path):
-        print(f"[WARN] Khong tim thay file: {config_path}")
-        print("  Dang dung bien moi truong PG_* hoac gia tri mac dinh.")
+        print(f"[WARN] Config not found: {config_path}")
+        print("  Using PG_* env vars or defaults.")
         return default_config
 
     config = configparser.ConfigParser()
@@ -58,8 +58,8 @@ def load_db_config(config_file: str = "config.properties") -> dict:
         config.read_string("[postgresql]\n" + raw_config)
 
     if "postgresql" not in config:
-        print("[WARN] File config.properties thieu section [postgresql]")
-        print("  Dang dung bien moi truong PG_* hoac gia tri mac dinh.")
+        print("[WARN] Missing [postgresql] section.")
+        print("  Using PG_* env vars or defaults.")
         return default_config
 
     pg = config["postgresql"]
@@ -73,7 +73,7 @@ def load_db_config(config_file: str = "config.properties") -> dict:
 
 
 # =============================================================
-#   Gioi han so luong ban ghi load
+#   Load limits
 # =============================================================
 
 JD_LIMIT = 1000
@@ -81,25 +81,25 @@ CV_LIMIT = 1000
 
 
 # =============================================================
-#   Ham lam sach du lieu
+#   Clean data
 # =============================================================
 
 def clean_text(text) -> str:
-    """Xu ly null va khoang trang thua."""
+    """Normalize text."""
     if not text or not isinstance(text, str):
         return ""
     return re.sub(r"\s+", " ", text).strip()
 
 
 def clean_scalar(value) -> str:
-    """Chuan hoa scalar, doi None thanh chuoi rong."""
+    """Normalize scalar."""
     if value is None:
         return ""
     return clean_text(str(value))
 
 
 def truncate(text: str, max_chars: int) -> str:
-    """Cat tai ranh gioi tu, khong dut giua chu."""
+    """Trim on word boundary."""
     if not text:
         return ""
     if len(text) <= max_chars:
@@ -110,7 +110,7 @@ def truncate(text: str, max_chars: int) -> str:
 
 
 def sanitize_jd_row(item: dict):
-    """Lam sach 1 JD truoc khi insert. Tra ve None neu description qua ngan."""
+    """Clean one JD row."""
     description = truncate(clean_scalar(item.get("Long Description")), 3000)
     if len(description) < 20:
         return None
@@ -125,7 +125,7 @@ def sanitize_jd_row(item: dict):
 
 
 def sanitize_cv_row(item: dict):
-    """Lam sach 1 CV truoc khi insert. Tra ve None neu cv_text qua ngan."""
+    """Clean one CV row."""
     cv_text = truncate(clean_scalar(item.get("CV")), 3000)
     if len(cv_text) < 20:
         return None
@@ -141,11 +141,11 @@ def sanitize_cv_row(item: dict):
 
 
 # =============================================================
-#   Load va clean dataset tu HuggingFace
+#   Load datasets
 # =============================================================
 
 def load_and_clean_datasets():
-    print("\n[1/3] Dang load dataset tu HuggingFace...")
+    print("\n[1/3] Loading HuggingFace datasets...")
 
     jd_raw = load_dataset(
         "lang-uk/recruitment-dataset-job-descriptions-english",
@@ -156,10 +156,10 @@ def load_and_clean_datasets():
         split=f"train[:{CV_LIMIT}]",
     )
 
-    print(f"   Raw JDs : {len(jd_raw)} ban ghi | columns: {jd_raw.column_names}")
-    print(f"   Raw CVs : {len(cv_raw)} ban ghi | columns: {cv_raw.column_names}")
+    print(f"   Raw JDs : {len(jd_raw)} rows | columns: {jd_raw.column_names}")
+    print(f"   Raw CVs : {len(cv_raw)} rows | columns: {cv_raw.column_names}")
 
-    print("\n[2/3] Dang clean data...")
+    print("\n[2/3] Cleaning data...")
 
     cleaned_jd, skipped_jd = [], 0
     for item in jd_raw:
@@ -177,18 +177,18 @@ def load_and_clean_datasets():
         else:
             cleaned_cv.append(row)
 
-    print(f"   JD: giu {len(cleaned_jd)}, bo {skipped_jd} (rong/qua ngan)")
-    print(f"   CV: giu {len(cleaned_cv)}, bo {skipped_cv} (rong/qua ngan)")
+    print(f"   JD: kept {len(cleaned_jd)}, skipped {skipped_jd} (empty/short)")
+    print(f"   CV: kept {len(cleaned_cv)}, skipped {skipped_cv} (empty/short)")
 
     return cleaned_jd, cleaned_cv
 
 
 # =============================================================
-#   Insert du lieu vao PostgreSQL
+#   Insert data
 # =============================================================
 
 def insert_data(cur, cleaned_jd: list, cleaned_cv: list):
-    print("\n[3/3] Dang insert data vao PostgreSQL...")
+    print("\n[3/3] Inserting into PostgreSQL...")
 
     # --- Job Descriptions ---
     jd_rows = [
@@ -241,12 +241,12 @@ def insert_data(cur, cleaned_jd: list, cleaned_cv: list):
 
 
 # =============================================================
-#   Verify du lieu sau khi insert
+#   Verify data
 # =============================================================
 
 def verify_data(cur):
     print("\n" + "=" * 55)
-    print("  VERIFY - Kiem tra data trong PostgreSQL")
+    print("  VERIFY - PostgreSQL data")
     print("=" * 55)
 
     cur.execute("SELECT COUNT(*) FROM job_descriptions;")
@@ -255,20 +255,20 @@ def verify_data(cur):
     cur.execute("SELECT COUNT(*) FROM cvs;")
     cv_count = cur.fetchone()[0]
 
-    print(f"\n  Tong job_descriptions : {jd_count}")
-    print(f"  Tong cvs              : {cv_count}")
+    print(f"\n  Total job_descriptions : {jd_count}")
+    print(f"  Total cvs              : {cv_count}")
 
-    print("\n  -- Sample JD (3 ban ghi dau) --")
+    print("\n  -- Sample JD (first 3 rows) --")
     cur.execute("SELECT id, position, company, keyword, exp_years FROM job_descriptions LIMIT 3;")
     for row in cur.fetchall():
         print(f"   [{row[0]}] {row[1][:40]} | {row[2][:25]} | kw: {row[3][:20]} | exp: {row[4]}")
 
-    print("\n  -- Sample CV (3 ban ghi dau) --")
+    print("\n  -- Sample CV (first 3 rows) --")
     cur.execute("SELECT id, position, keyword, exp_years FROM cvs LIMIT 3;")
     for row in cur.fetchall():
         print(f"   [{row[0]}] {row[1][:40]} | kw: {row[2][:20]} | exp: {row[3]}")
 
-    print("\n  -- Demo Full-text search: tim CV co 'Python' --")
+    print("\n  -- Demo full-text search: CVs with 'Python' --")
     cur.execute(
         """
         SELECT id, position, keyword
@@ -278,11 +278,11 @@ def verify_data(cur):
         """
     )
     rows = cur.fetchall()
-    print(f"  Tim thay {len(rows)} ket qua (top 5)")
+    print(f"  Found {len(rows)} results (top 5)")
     for row in rows:
         print(f"   [{row[0]}] {row[1][:40]} | kw: {row[2][:25]}")
 
-    print("\n  Data da san sang!")
+    print("\n  Data is ready.")
 
 
 # =============================================================
@@ -295,33 +295,33 @@ def main():
     print(f"  Target: {JD_LIMIT} JDs + {CV_LIMIT} CVs")
     print("=" * 55)
 
-    # Doc config
+    # Load config
     db_config = load_db_config("config.properties")
 
-    # Load + clean data truoc khi ket noi DB
+    # Load and clean before connecting
     cleaned_jd, cleaned_cv = load_and_clean_datasets()
 
-    # Ket noi PostgreSQL
+    # Connect to PostgreSQL
     print(f"\n  Connecting: {db_config['host']}:{db_config['port']}/{db_config['dbname']}...")
     try:
         conn = psycopg2.connect(**db_config)
         conn.autocommit = False
         cur = conn.cursor()
-        print("  Connected thanh cong!")
+        print("  Connected.")
     except psycopg2.OperationalError as e:
-        print(f"\n[ERROR] Khong ket noi duoc PostgreSQL:\n  {e}")
-        print("\nKiem tra lai config.properties:")
+        print(f"\n[ERROR] PostgreSQL connection failed:\n  {e}")
+        print("\nCheck config.properties:")
         print("  host / port / dbname / user / password")
         sys.exit(1)
 
     # Insert + verify
     try:
-        # Kiem tra bang co du lieu chua de tranh insert trung
+        # Avoid duplicate inserts
         cur.execute("SELECT COUNT(*) FROM job_descriptions;")
         existing = cur.fetchone()[0]
         if existing > 0:
-            print(f"\n  [SKIP] Bang job_descriptions da co {existing} ban ghi.")
-            print("  Xoa data cu truoc neu muon load lai: TRUNCATE job_descriptions, cvs;")
+            print(f"\n  [SKIP] job_descriptions already has {existing} rows.")
+            print("  To reload: TRUNCATE job_descriptions, cvs;")
         else:
             insert_data(cur, cleaned_jd, cleaned_cv)
             conn.commit()
