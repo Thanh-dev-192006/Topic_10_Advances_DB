@@ -54,8 +54,8 @@
         <strong class="status-value" id="status-milvus">...</strong>
       </div>
       <div class="status-item">
-        <span class="status-label"><i class="ph ph-database"></i> SQL Engine</span>
-        <strong class="status-value">SQLite</strong>
+        <span class="status-label"><i class="ph ph-database"></i> PostgreSQL Engine</span>
+        <strong class="status-value">PostgreSQL</strong>
       </div>
     </div>
   </aside>
@@ -97,15 +97,23 @@
               <i class="ph ph-caret-down select-icon"></i>
             </div>
             <div class="divider"></div>
-            <input type="text" placeholder="e.g. Python backend developer with Django and REST API experience"
-              class="search-input" id="searchInput">
-            <button class="btn-primary" id="analyzeBtn">
-              <i class="ph ph-sparkle"></i> Analyze
-            </button>
+            <div class="search-input-wrapper" style="position:relative; flex:1;">
+              <input type="text" placeholder="e.g. Python backend developer with Django and REST API experience"
+                class="search-input" id="searchInput" autocomplete="off" style="width:100%">
+              <ul id="searchSuggest" class="search-suggest-dropdown hidden"></ul>
+            </div>
+            <div style="display:flex; gap:8px;">
+              <button class="btn-primary" id="analyzeBtn">
+                <i class="ph ph-sparkle"></i> Analyze
+              </button>
+              <button class="btn-primary" id="refreshBtn" style="background:var(--surface-container-highest); color:var(--on-surface); padding: 0 16px;" title="Clear Search">
+                <i class="ph ph-arrows-counter-clockwise"></i>
+              </button>
+            </div>
           </div>
 
           <div class="keyword-extraction">
-            <span class="extraction-label">Extracted Keywords (SQL):</span>
+            <span class="extraction-label">Extracted Keywords (PostgreSQL):</span>
             <div class="keyword-chips" id="keywordChips">
               <span class="chip chip-sql" style="opacity:0.4; font-style:italic">keywords appear after search...</span>
             </div>
@@ -116,7 +124,7 @@
           <div class="metric-card">
             <div class="metric-icon sql-icon"><i class="ph ph-magnifying-glass"></i></div>
             <div class="metric-data">
-              <div class="metric-label">SQL Matches</div>
+              <div class="metric-label">PostgreSQL Matches</div>
               <div class="metric-value" id="m-sql-count">—</div>
             </div>
           </div>
@@ -130,7 +138,7 @@
           <div class="metric-card">
             <div class="metric-icon sql-icon"><i class="ph ph-timer"></i></div>
             <div class="metric-data">
-              <div class="metric-label">SQL Query Time</div>
+              <div class="metric-label">PostgreSQL Query Time</div>
               <div class="metric-value" id="m-sql-time">— <span class="metric-unit">ms</span></div>
             </div>
           </div>
@@ -144,10 +152,10 @@
         </div>
 
         <div class="split-view">
-          <!-- SQL Column -->
+          <!-- PostgreSQL Column -->
           <div class="split-column col-sql">
             <div class="column-header">
-              <h2 class="column-title">SQL LIKE Strategy</h2>
+              <h2 class="column-title">Postgre Strategy</h2>
               <span class="strategy-badge">OR Fallback</span>
             </div>
             <div class="result-list" id="sql-results"></div>
@@ -188,7 +196,7 @@
           <div class="chart-header">
             <h3 class="section-title">Latency Comparison (ms)</h3>
             <div class="chart-legend">
-              <span class="legend-item"><span class="legend-color sql-color"></span> SQL</span>
+              <span class="legend-item"><span class="legend-color sql-color"></span> PostgreSQL</span>
               <span class="legend-item"><span class="legend-color vector-color"></span> Vector</span>
             </div>
           </div>
@@ -213,6 +221,17 @@
               <div class="bar bar-sql tooltip" data-tip="7.5ms" style="height: 37%"></div>
               <div class="bar bar-vector tooltip" data-tip="11.0ms" style="height: 55%"></div><span>Q5</span>
             </div>
+          </div>
+        </div>
+
+        <div class="split-view mt-4">
+          <div class="split-column chart-panel">
+            <h3 class="section-title mb-3">Top Positions</h3>
+            <div id="dash-top-positions" class="dash-list">Loading...</div>
+          </div>
+          <div class="split-column chart-panel">
+            <h3 class="section-title mb-3">Experience Distribution</h3>
+            <div id="dash-experience" class="dash-list">Loading...</div>
           </div>
         </div>
       </div>
@@ -249,8 +268,38 @@
           <p style="font-size: 0.875rem; color: var(--on-surface-variant); opacity: 0.7;">The backend currently only indexes CV data. JD support will be added in a future version.</p>
         </div>
       </div>
+      </div>
     </div>
   </main>
+
+  <!-- Full CV Modal -->
+  <div id="cvModal" class="modal-overlay hidden">
+    <div class="modal-content glass-panel">
+      <button class="modal-close" id="closeModalBtn"><i class="ph ph-x"></i></button>
+      <div class="modal-header">
+        <h2 id="modalTitle" class="page-title" style="margin-bottom:8px">Position Title</h2>
+        <div class="score-group mb-4">
+          <span id="modalScore" class="score-badge">--%</span>
+          <span id="modalRawScore" class="raw-score"></span>
+        </div>
+      </div>
+      <div class="modal-body">
+        <div class="modal-section mb-4">
+          <div class="sidebar-title">Experience & Highlights</div>
+          <p id="modalExp" style="font-weight:600; margin-bottom:8px;"></p>
+          <p id="modalHighlights" style="color:var(--on-surface-variant); line-height:1.5"></p>
+        </div>
+        <div class="modal-section mb-4">
+          <div class="sidebar-title">Primary Keywords</div>
+          <div id="modalKws" class="keyword-chips"></div>
+        </div>
+        <div class="modal-section">
+          <div class="sidebar-title">Full CV Text</div>
+          <p id="modalFullText" style="line-height:1.6; color:var(--on-surface-variant); white-space:pre-wrap"></p>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>

@@ -41,8 +41,8 @@ def extract_keywords(query: str) -> list[str]:
     STOP_WORDS = {"with", "and", "the", "for", "in", "of", "to", "a", "an", "is", "are",
                   "that", "this", "have", "has", "been", "will", "can", "from", "or", "on",
                   "at", "by", "who", "our"}
-    words = re.findall(r'[a-zA-Z]+', query.lower())
-    return [w for w in words if len(w) >= 3 and w not in STOP_WORDS]
+    words = re.findall(r'[a-zA-Z0-9]+', query.lower())
+    return [w for w in words if len(w) >= 2 and w not in STOP_WORDS]
 
 @app.on_event("startup")
 def startup_event():
@@ -149,13 +149,13 @@ def search(query: str = Query(...), limit: int = 5):
         kw_params = [f'%{kw}%' for kw in keywords for _ in range(4)]
 
         subquery = (
-            f"SELECT id, position, keyword, cv_text, highlights,"
+            f"SELECT id, position, keyword, cv_text, highlights, exp_years,"
             f" ({match_score_expr}) AS match_score,"
             f" ({keyword_count_expr}) AS keyword_count"
             f" FROM cvs"
         )
         outer_sql = (
-            f"SELECT id, position, keyword, cv_text, highlights, match_score, keyword_count"
+            f"SELECT id, position, keyword, cv_text, highlights, exp_years, match_score, keyword_count"
             f" FROM ({subquery})"
             f" WHERE keyword_count >= ?"
             f" ORDER BY match_score DESC LIMIT ?"
@@ -170,24 +170,47 @@ def search(query: str = Query(...), limit: int = 5):
                 seen.add(n)
                 thresholds.append((n, name))
 
+        seen_ids = set()
+        sql_strategies = []
         for n_required, strategy_name in thresholds:
-            cur.execute(outer_sql, kw_params + kw_params + [n_required, limit])
-            raw_results = [dict(row) for row in cur.fetchall()]
-            if raw_results:
-                sql_strategy = strategy_name
+            if len(raw_results) >= limit:
                 break
+            cur.execute(outer_sql, kw_params + kw_params + [n_required, limit])
+            added_this_round = False
+            for row in cur.fetchall():
+                if row["id"] not in seen_ids:
+                    seen_ids.add(row["id"])
+                    raw_results.append(dict(row))
+                    added_this_round = True
+                    if len(raw_results) >= limit:
+                        break
+            if added_this_round:
+                sql_strategies.append(strategy_name)
 
-        # Absolute scoring: max possible = 6 pts/keyword
-        # (position=2, keyword_field=2, cv_text=1, highlights=1)
-        max_possible = 6 * len(keywords)
+        if sql_strategies:
+            sql_strategy = " + ".join(sql_strategies)
+
         for i, row in enumerate(raw_results):
-            score_pct = round(row["match_score"] / max_possible * 100) if max_possible > 0 else 0
+            # Base score: up to 70% based on how many keywords were found anywhere
+            base_pct = (row["keyword_count"] / len(keywords)) * 70 if len(keywords) > 0 else 0
+            
+            # Bonus score: up to 30% if keywords appear in high-weight fields (position, highlights)
+            extra_points = row["match_score"] - row["keyword_count"]
+            max_extra = 5 * len(keywords) # 6 max possible - 1 for cv_text
+            bonus_pct = (extra_points / max_extra) * 30 if max_extra > 0 else 0
+            
+            score_pct = min(100, round(base_pct + bonus_pct))
+            
             sql_results.append({
                 "rank": i + 1,
                 "title": row["position"],
                 "score": str(score_pct),
                 "raw_score": f"{row['keyword_count']}/{len(keywords)} kw",
                 "text": row["cv_text"][:150] + "...",
+                "full_text": row["cv_text"],
+                "highlights": row["highlights"],
+                "exp_years": row["exp_years"],
+                "kws": row["keyword"]
             })
 
     sql_time_ms = (time.perf_counter() - sql_start) * 1000
@@ -197,25 +220,62 @@ def search(query: str = Query(...), limit: int = 5):
     vector_results = []
     if cv_col is not None:
         query_vector = model.encode([query])
+        # Fetch more candidates for re-ranking (Hybrid approach)
+        fetch_limit = limit * 4
         v_res = cv_col.search(
             data=query_vector.tolist(),
             anns_field="vector",
             param={"metric_type": "COSINE"},
-            limit=limit,
+            limit=fetch_limit,
             output_fields=["position", "keyword", "cv_text"],
         )
 
         hits = v_res[0]
         if hits:
-            for i, hit in enumerate(hits):
-                # Cosine similarity is already in [0, 1] — map directly to %
-                score_pct = round(max(0.0, hit.score) * 100)
+            # Fetch extra metadata from SQLite
+            hit_ids = [hit.id for hit in hits]
+            cur.execute(f"SELECT id, highlights, exp_years FROM cvs WHERE id IN ({','.join(['?']*len(hit_ids))})", hit_ids)
+            extra_data = {r["id"]: dict(r) for r in cur.fetchall()}
+
+            scored_hits = []
+            for hit in hits:
+                pos = (hit.entity.get("position") or "").lower()
+                kw = (hit.entity.get("keyword") or "").lower()
+                text = (hit.entity.get("cv_text") or "").lower()
+                
+                # Apply lexical bonus to vector score
+                bonus = 0.0
+                if keywords:
+                    for k in keywords:
+                        # Exact word matching or substring matching
+                        if k in pos: bonus += 0.15
+                        elif k in kw: bonus += 0.10
+                        elif k in text: bonus += 0.05
+                
+                final_score = hit.score + bonus
+                scored_hits.append((final_score, hit))
+            
+            # Sort descending by the new hybrid score
+            scored_hits.sort(key=lambda x: x[0], reverse=True)
+            
+            for i, (final_score, hit) in enumerate(scored_hits[:limit]):
+                # Cap the percentage at 100% just in case
+                score_pct = min(100, round(max(0.0, final_score) * 100))
+                
+                # Show hybrid components in raw_score
+                bonus_str = f" + {(final_score - hit.score):.2f} kw" if final_score > hit.score else ""
+                
+                extra = extra_data.get(hit.id, {})
                 vector_results.append({
                     "rank": i + 1,
                     "title": hit.entity.get("position"),
                     "score": str(score_pct),
-                    "raw_score": f"{hit.score:.4f}",
+                    "raw_score": f"cos {hit.score:.3f}{bonus_str}",
                     "text": hit.entity.get("cv_text")[:150] + "...",
+                    "full_text": hit.entity.get("cv_text"),
+                    "highlights": extra.get("highlights", ""),
+                    "exp_years": extra.get("exp_years", ""),
+                    "kws": hit.entity.get("keyword")
                 })
     vector_time_ms = (time.perf_counter() - vector_start) * 1000
 
@@ -229,6 +289,60 @@ def search(query: str = Query(...), limit: int = 5):
         "vector_results": vector_results,
     }
 
+# ── Auto-suggest endpoint ───────────────────────────────────────────────────
+
+@app.get("/api/suggest")
+def suggest(q: str = Query("")):
+    if len(q) < 2: return {"suggestions": []}
+    # Search for matching positions or keywords
+    cur.execute(
+        "SELECT DISTINCT position FROM cvs WHERE position LIKE ? LIMIT 50",
+        (f"%{q}%",)
+    )
+    
+    suggestions = set()
+    q_lower = q.lower()
+    for row in cur.fetchall():
+        pos_raw = row["position"]
+        if not pos_raw: continue
+        
+        # Split by comma, pipe, or forward slash
+        parts = re.split(r'[,|/]+', pos_raw)
+        for part in parts:
+            part = part.strip()
+            if q_lower in part.lower():
+                # Avoid insanely long suggestions
+                if len(part) <= 40:
+                    # Capitalize nicely
+                    suggestions.add(part.title() if part.islower() else part)
+        
+        if len(suggestions) >= 5:
+            break
+            
+    return {"suggestions": list(suggestions)[:5]}
+
+# ── Stats endpoint ──────────────────────────────────────────────────────────
+
+@app.get("/api/stats")
+def stats():
+    # Experience distribution
+    cur.execute("""
+        SELECT 
+            SUM(CASE WHEN exp_years LIKE '%1%' OR exp_years LIKE '%2%' THEN 1 ELSE 0 END) as junior,
+            SUM(CASE WHEN exp_years LIKE '%3%' OR exp_years LIKE '%4%' OR exp_years LIKE '%5%' THEN 1 ELSE 0 END) as mid,
+            SUM(CASE WHEN exp_years LIKE '%6%' OR exp_years LIKE '%7%' OR exp_years LIKE '%8%' OR exp_years LIKE '%9%' OR exp_years LIKE '%10%' THEN 1 ELSE 0 END) as senior
+        FROM cvs
+    """)
+    exp = dict(cur.fetchone())
+    
+    # Top positions
+    cur.execute("SELECT position, COUNT(*) as count FROM cvs GROUP BY position ORDER BY count DESC LIMIT 5")
+    positions = [dict(row) for row in cur.fetchall()]
+    
+    return {
+        "experience": {"Junior (1-2y)": exp["junior"] or 0, "Mid (3-5y)": exp["mid"] or 0, "Senior (6y+)": exp["senior"] or 0},
+        "top_positions": positions
+    }
 
 # ── Serve frontend as static files (fixes file:// CORS issue) ───────────────
 # Open http://localhost:8001 instead of opening index.html directly

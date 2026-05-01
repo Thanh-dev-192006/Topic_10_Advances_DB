@@ -55,6 +55,35 @@ document.addEventListener('DOMContentLoaded', () => {
         vecBadge.textContent = 'Milvus offline';
         vecBadge.style.color = 'var(--sql-logic)';
       }
+      
+      // Fetch Dashboard Stats
+      try {
+        const statsRes = await fetch(`${API_BASE}/api/stats`);
+        if (statsRes.ok) {
+          const statsData = await statsRes.json();
+          const topPosEl = document.getElementById('dash-top-positions');
+          if (topPosEl) {
+            topPosEl.innerHTML = statsData.top_positions.map(p => `
+              <div class="dash-list-item">
+                <span class="label">${p.position || 'Unknown'}</span>
+                <span class="value">${p.count} CVs</span>
+              </div>
+            `).join('');
+          }
+          const expEl = document.getElementById('dash-experience');
+          if (expEl) {
+            expEl.innerHTML = Object.entries(statsData.experience).map(([k, v]) => `
+              <div class="dash-list-item">
+                <span class="label">${k}</span>
+                <span class="value">${v} CVs</span>
+              </div>
+            `).join('');
+          }
+        }
+      } catch (e) {
+        console.error("Stats fetch failed", e);
+      }
+      
     } catch (_) {
       // Backend not yet reachable — silently skip, user will see API error on search
     }
@@ -67,12 +96,124 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const runSearch = () => {
     const query = searchInput.value.trim();
+    document.getElementById('searchSuggest')?.classList.add('hidden');
     if (query) doSearch(query);
   };
 
   analyzeBtn.addEventListener('click', runSearch);
+  
+  const refreshBtn = document.getElementById('refreshBtn');
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', () => {
+      searchInput.value = '';
+      searchInput.focus();
+      renderResults('sql-results', [], 'sql');
+      renderResults('vector-results', [], 'vector');
+      const chipsEl = document.getElementById('keywordChips');
+      if (chipsEl) chipsEl.innerHTML = '<span class="chip chip-sql" style="opacity:0.4; font-style:italic">keywords appear after search...</span>';
+      document.getElementById('m-sql-count').textContent = '—';
+      document.getElementById('m-vec-count').textContent = '—';
+      document.getElementById('m-sql-time').innerHTML = '—';
+      document.getElementById('m-vec-time').innerHTML = '—';
+      
+      const sqlBadge = document.querySelector('.col-sql .strategy-badge');
+      if (sqlBadge) sqlBadge.textContent = 'Exact Match';
+      const vecBadge = document.querySelector('.col-vector .strategy-badge');
+      if (vecBadge) vecBadge.textContent = 'Dense Vector';
+      
+      clearError();
+    });
+  }
+  
+  // ── Auto-suggest ──────────────────────────────────────────────────────────
+  const searchSuggest = document.getElementById('searchSuggest');
+  let suggestTimeout;
+  let inactivityTimeout;
+  let currentSuggestIndex = -1;
+  let originalQuery = '';
+
+  searchInput.addEventListener('input', (e) => {
+    const q = e.target.value;
+    originalQuery = q;
+    clearTimeout(suggestTimeout);
+    clearTimeout(inactivityTimeout);
+    
+    if (!q.trim()) {
+      searchSuggest.classList.add('hidden');
+      return;
+    }
+    
+    suggestTimeout = setTimeout(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/suggest?q=${encodeURIComponent(q)}`);
+        if (res.ok) {
+          if (searchInput.value.trim() !== q.trim()) return; // Fix race condition
+          const data = await res.json();
+          if (data.suggestions.length > 0) {
+            currentSuggestIndex = -1;
+            searchSuggest.innerHTML = data.suggestions.map(s => `<li>${s}</li>`).join('');
+            searchSuggest.classList.remove('hidden');
+            
+            searchSuggest.querySelectorAll('li').forEach(li => {
+              li.addEventListener('click', () => {
+                searchInput.value = li.textContent;
+                searchSuggest.classList.add('hidden');
+                runSearch();
+              });
+            });
+            
+            inactivityTimeout = setTimeout(() => {
+              searchSuggest.classList.add('hidden');
+            }, 10000);
+          } else {
+            searchSuggest.classList.add('hidden');
+          }
+        }
+      } catch (err) {}
+    }, 300);
+  });
+
   searchInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') runSearch();
+    const isHidden = searchSuggest.classList.contains('hidden');
+    const items = searchSuggest.querySelectorAll('li');
+
+    if (e.key === 'ArrowDown' && !isHidden) {
+      e.preventDefault();
+      if (items.length > 0) {
+        if (currentSuggestIndex >= 0) items[currentSuggestIndex].classList.remove('active');
+        currentSuggestIndex = (currentSuggestIndex + 1) % items.length;
+        items[currentSuggestIndex].classList.add('active');
+        searchInput.value = items[currentSuggestIndex].textContent;
+        items[currentSuggestIndex].scrollIntoView({ block: 'nearest' });
+      }
+    } else if (e.key === 'ArrowUp' && !isHidden) {
+      e.preventDefault();
+      if (items.length > 0) {
+        if (currentSuggestIndex >= 0) items[currentSuggestIndex].classList.remove('active');
+        if (currentSuggestIndex <= 0) {
+          currentSuggestIndex = -1;
+          searchInput.value = originalQuery;
+        } else {
+          currentSuggestIndex--;
+          items[currentSuggestIndex].classList.add('active');
+          searchInput.value = items[currentSuggestIndex].textContent;
+          items[currentSuggestIndex].scrollIntoView({ block: 'nearest' });
+        }
+      }
+    } else if (e.key === 'Enter') {
+      searchSuggest.classList.add('hidden');
+      runSearch();
+    } else if (e.key === 'Tab' && !isHidden) {
+      const activeItem = currentSuggestIndex >= 0 ? items[currentSuggestIndex] : items[0];
+      if (activeItem) {
+        e.preventDefault();
+        searchInput.value = activeItem.textContent;
+        searchSuggest.classList.add('hidden');
+      }
+    } else if (e.key === 'Escape') {
+      searchSuggest.classList.add('hidden');
+      searchInput.value = originalQuery;
+    }
   });
 
   function showError(msg) {
@@ -153,11 +294,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ── Render helpers ────────────────────────────────────────────────────────
 
-  // Score tiers: ≥60% = high (green), 30-59% = medium (yellow), <30% = low (red)
-  const scoreTierClass = (pct) => {
-    if (pct >= 60) return 'score-high';
-    if (pct >= 30) return 'score-medium';
-    return 'score-low';
+  // Smooth color transition based on percentage
+  const getScoreColor = (pct) => {
+    // 0% -> Hue 0 (Red)
+    // 50% -> Hue 60 (Yellow)
+    // 100% -> Hue 120 (Green)
+    const hue = Math.max(0, Math.min(120, pct * 1.2));
+    return `hsl(${hue}, 80%, 40%)`;
+  };
+  const getScoreBg = (pct) => {
+    const hue = Math.max(0, Math.min(120, pct * 1.2));
+    return `hsl(${hue}, 80%, 90%)`;
   };
 
   const scoreTierLabel = (pct) => {
@@ -173,7 +320,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (data.length === 0) {
       const label = type === 'vector'
         ? 'No vector results — check Milvus is running and collection is loaded.'
-        : 'No SQL matches found for these keywords.';
+        : 'No PostgreSQL matches found for these keywords.';
       container.innerHTML = `<div class="result-card empty-state">${label}</div>`;
       return;
     }
@@ -185,27 +332,75 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       const pct = parseInt(item.score, 10);
-      const tierClass = isNaN(pct) ? '' : scoreTierClass(pct);
-      const tierLabel = isNaN(pct) ? item.score : `${pct}% — ${scoreTierLabel(pct)}`;
+      const isNum = !isNaN(pct);
+      const tierLabel = isNum ? `${pct}% — ${scoreTierLabel(pct)}` : item.score;
+      const colorStyle = isNum ? `background-color: ${getScoreBg(pct)}; color: ${getScoreColor(pct)}; box-shadow: inset 0 0 0 2px ${getScoreColor(pct)};` : '';
 
       const rawLabel = item.raw_score
-        ? `<span class="raw-score">${type === 'vector' ? 'cosine ' : 'kw '}${item.raw_score}</span>`
+        ? `<span class="raw-score">${type === 'vector' ? '' : 'kw '}${item.raw_score}</span>`
         : '';
 
-      container.innerHTML += `
-        <div class="result-card">
+      const card = document.createElement('div');
+      card.className = 'result-card';
+      card.innerHTML = `
           <div class="result-header">
             <span class="result-rank">Rank #${item.rank}</span>
             <div class="score-group">
-              <span class="score-badge ${tierClass}">${tierLabel}</span>
+              <span class="score-badge" style="${colorStyle}">${tierLabel}</span>
               ${rawLabel}
             </div>
           </div>
           <div class="result-title">${item.title}</div>
           <p class="result-snippet">${item.text}</p>
-        </div>`;
+      `;
+      
+      card.addEventListener('click', () => openModal(item, pct, tierLabel, colorStyle, type));
+      container.appendChild(card);
     });
   };
+
+  // ── Modal Logic ──────────────────────────────────────────────────────────
+  const cvModal = document.getElementById('cvModal');
+  const closeModalBtn = document.getElementById('closeModalBtn');
+  
+  if (closeModalBtn) {
+    closeModalBtn.addEventListener('click', () => cvModal.classList.add('hidden'));
+    cvModal.addEventListener('click', (e) => {
+      if (e.target === cvModal) cvModal.classList.add('hidden');
+    });
+  }
+
+  function openModal(item, pct, tierLabel, colorStyle, type) {
+    document.getElementById('modalTitle').textContent = item.title || 'Unknown Position';
+    
+    const scoreBadge = document.getElementById('modalScore');
+    scoreBadge.textContent = tierLabel;
+    scoreBadge.style = colorStyle;
+    
+    const rawBadge = document.getElementById('modalRawScore');
+    if (item.raw_score) {
+      rawBadge.textContent = (type === 'vector' ? '' : 'kw ') + item.raw_score;
+    } else {
+      rawBadge.textContent = '';
+    }
+    
+    document.getElementById('modalExp').textContent = `Exp: ${item.exp_years || 'Not specified'} years`;
+    document.getElementById('modalHighlights').textContent = item.highlights || 'No highlights available.';
+    document.getElementById('modalFullText').textContent = item.full_text || item.text;
+    
+    const kwsEl = document.getElementById('modalKws');
+    kwsEl.innerHTML = '';
+    if (item.kws) {
+      item.kws.split(',').forEach(k => {
+        k = k.trim();
+        if (k) kwsEl.innerHTML += `<span class="chip chip-sql">${k}</span>`;
+      });
+    } else {
+      kwsEl.innerHTML = '<span class="chip" style="opacity:0.5">No keywords</span>';
+    }
+    
+    cvModal.classList.remove('hidden');
+  }
 
   // Clear results on load
   renderResults('sql-results', [], 'sql');
