@@ -7,10 +7,24 @@ const API_BASE = window.location.protocol === 'file:'
   : '';
 
 document.addEventListener('DOMContentLoaded', () => {
-  const topNRange = document.getElementById('topNRange');
-  const topNValue = document.getElementById('topNValue');
-  topNRange.addEventListener('input', (e) => {
-    topNValue.textContent = e.target.value;
+  const controls = [
+    { rangeId: 'topNRange', valueId: 'topNValue' },
+    { rangeId: 'minScoreRange', valueId: 'minScoreValue' },
+    { rangeId: 'vectorThresholdRange', valueId: 'vectorThresholdValue' },
+  ];
+
+  controls.forEach(({ rangeId, valueId }) => {
+    const range = document.getElementById(rangeId);
+    const label = document.getElementById(valueId);
+    if (!range || !label) return;
+
+    const syncLabel = () => {
+      label.textContent = range.value;
+    };
+
+    range.addEventListener('input', syncLabel);
+    range.addEventListener('change', syncLabel);
+    syncLabel();
   });
 
   // Tab routing
@@ -37,17 +51,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // Sidebar
       const cvCountEl = document.getElementById('status-cv-count');
-      const milvusEl  = document.getElementById('status-milvus');
+      const milvusEl = document.getElementById('status-milvus');
       if (cvCountEl) cvCountEl.textContent = data.cv_count.toLocaleString();
-      if (milvusEl)  milvusEl.textContent  = data.milvus_connected ? 'Milvus ✓' : 'Milvus ✗';
+      if (milvusEl) milvusEl.textContent = data.milvus_connected ? 'Milvus ✓' : 'Milvus ✗';
 
       // Dashboard
-      const dashCvEl    = document.getElementById('dash-cv-count');
+      const dashCvEl = document.getElementById('dash-cv-count');
       const dashModelEl = document.getElementById('dash-model');
-      const dashDimEl   = document.getElementById('dash-dim');
-      if (dashCvEl)    dashCvEl.textContent    = data.cv_count.toLocaleString();
+      const dashDimEl = document.getElementById('dash-dim');
+      if (dashCvEl) dashCvEl.textContent = data.cv_count.toLocaleString();
       if (dashModelEl) dashModelEl.textContent = 'MiniLM-L12-v2';
-      if (dashDimEl)   dashDimEl.textContent   = data.vector_dim;
+      if (dashDimEl) dashDimEl.textContent = data.vector_dim;
 
       // Vector search badge
       const vecBadge = document.querySelector('.col-vector .strategy-badge');
@@ -55,7 +69,7 @@ document.addEventListener('DOMContentLoaded', () => {
         vecBadge.textContent = 'Milvus offline';
         vecBadge.style.color = 'var(--sql-logic)';
       }
-      
+
       // Fetch Dashboard Stats
       try {
         const statsRes = await fetch(`${API_BASE}/api/stats`);
@@ -83,14 +97,14 @@ document.addEventListener('DOMContentLoaded', () => {
       } catch (e) {
         console.error("Stats fetch failed", e);
       }
-      
+
     } catch (_) {
       // Backend not yet reachable — silently skip, user will see API error on search
     }
   }
 
   // ── Search ────────────────────────────────────────────────────────────────
-  const analyzeBtn  = document.getElementById('analyzeBtn');
+  const analyzeBtn = document.getElementById('analyzeBtn');
   const searchInput = document.getElementById('searchInput');
   const errorBanner = document.getElementById('errorBanner');
 
@@ -101,30 +115,30 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   analyzeBtn.addEventListener('click', runSearch);
-  
+
   const refreshBtn = document.getElementById('refreshBtn');
   if (refreshBtn) {
     refreshBtn.addEventListener('click', () => {
       searchInput.value = '';
       searchInput.focus();
-      renderResults('sql-results', [], 'sql');
-      renderResults('vector-results', [], 'vector');
+      renderResults('sql-results', [], 'sql', '');
+      renderResults('vector-results', [], 'vector', '');
       const chipsEl = document.getElementById('keywordChips');
       if (chipsEl) chipsEl.innerHTML = '<span class="chip chip-sql" style="opacity:0.4; font-style:italic">keywords appear after search...</span>';
       document.getElementById('m-sql-count').textContent = '—';
       document.getElementById('m-vec-count').textContent = '—';
       document.getElementById('m-sql-time').innerHTML = '—';
       document.getElementById('m-vec-time').innerHTML = '—';
-      
+
       const sqlBadge = document.querySelector('.col-sql .strategy-badge');
       if (sqlBadge) sqlBadge.textContent = 'Exact Match';
       const vecBadge = document.querySelector('.col-vector .strategy-badge');
       if (vecBadge) vecBadge.textContent = 'Dense Vector';
-      
+
       clearError();
     });
   }
-  
+
   // ── Auto-suggest ──────────────────────────────────────────────────────────
   const searchSuggest = document.getElementById('searchSuggest');
   let suggestTimeout;
@@ -137,12 +151,12 @@ document.addEventListener('DOMContentLoaded', () => {
     originalQuery = q;
     clearTimeout(suggestTimeout);
     clearTimeout(inactivityTimeout);
-    
+
     if (!q.trim()) {
       searchSuggest.classList.add('hidden');
       return;
     }
-    
+
     suggestTimeout = setTimeout(async () => {
       try {
         const res = await fetch(`${API_BASE}/api/suggest?q=${encodeURIComponent(q)}`);
@@ -153,7 +167,7 @@ document.addEventListener('DOMContentLoaded', () => {
             currentSuggestIndex = -1;
             searchSuggest.innerHTML = data.suggestions.map(s => `<li>${s}</li>`).join('');
             searchSuggest.classList.remove('hidden');
-            
+
             searchSuggest.querySelectorAll('li').forEach(li => {
               li.addEventListener('click', () => {
                 searchInput.value = li.textContent;
@@ -161,7 +175,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 runSearch();
               });
             });
-            
+
             inactivityTimeout = setTimeout(() => {
               searchSuggest.classList.add('hidden');
             }, 10000);
@@ -169,7 +183,7 @@ document.addEventListener('DOMContentLoaded', () => {
             searchSuggest.classList.add('hidden');
           }
         }
-      } catch (err) {}
+      } catch (err) { }
     }, 300);
   });
 
@@ -234,7 +248,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     try {
       const limit = topNRange.value;
-      const url = `${API_BASE}/api/search?query=${encodeURIComponent(query)}&limit=${limit}`;
+      const minScore = minScoreRange.value;
+      const vectorThreshold = vectorThresholdRange.value;
+      const url = `${API_BASE}/api/search?query=${encodeURIComponent(query)}&limit=${limit}` +
+        `&min_score=${minScore}&vector_threshold=${vectorThreshold}`;
       const res = await fetch(url);
 
       if (!res.ok) {
@@ -277,8 +294,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       }
 
-      renderResults('sql-results', data.sql_results, 'sql');
-      renderResults('vector-results', data.vector_results, 'vector');
+      renderResults('sql-results', data.sql_results, 'sql', data.sql_filtered_reason);
+      renderResults('vector-results', data.vector_results, 'vector', data.vector_filtered_reason);
 
     } catch (err) {
       const isFileProtocol = window.location.protocol === 'file:';
@@ -313,14 +330,23 @@ document.addEventListener('DOMContentLoaded', () => {
     return 'Weak Match';
   };
 
-  const renderResults = (containerId, data, type) => {
+  const renderResults = (containerId, data, type, filteredReason = '') => {
     const container = document.getElementById(containerId);
     container.innerHTML = '';
 
     if (data.length === 0) {
-      const label = type === 'vector'
-        ? 'No vector results — check Milvus is running and collection is loaded.'
-        : 'No PostgreSQL matches found for these keywords.';
+      let label = filteredReason;
+      if (!label) {
+        if (type === 'vector' && vectorThresholdRange && vectorThresholdRange.value > 0) {
+          label = `Does not satisfy vector threshold = ${vectorThresholdRange.value}%`;
+        } else if (type === 'sql' && minScoreRange && minScoreRange.value > 0) {
+          label = `Does not satisfy min match score = ${minScoreRange.value}%`;
+        } else {
+          label = type === 'vector'
+            ? 'No vector results — check Milvus is running and collection is loaded.'
+            : 'No PostgreSQL matches found for these keywords.';
+        }
+      }
       container.innerHTML = `<div class="result-card empty-state">${label}</div>`;
       return;
     }
@@ -353,7 +379,7 @@ document.addEventListener('DOMContentLoaded', () => {
           <div class="result-title">${item.title}</div>
           <p class="result-snippet">${item.text}</p>
       `;
-      
+
       card.addEventListener('click', () => openModal(item, pct, tierLabel, colorStyle, type));
       container.appendChild(card);
     });
@@ -362,7 +388,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // ── Modal Logic ──────────────────────────────────────────────────────────
   const cvModal = document.getElementById('cvModal');
   const closeModalBtn = document.getElementById('closeModalBtn');
-  
+
   if (closeModalBtn) {
     closeModalBtn.addEventListener('click', () => cvModal.classList.add('hidden'));
     cvModal.addEventListener('click', (e) => {
@@ -372,22 +398,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function openModal(item, pct, tierLabel, colorStyle, type) {
     document.getElementById('modalTitle').textContent = item.title || 'Unknown Position';
-    
+
     const scoreBadge = document.getElementById('modalScore');
     scoreBadge.textContent = tierLabel;
     scoreBadge.style = colorStyle;
-    
+
     const rawBadge = document.getElementById('modalRawScore');
     if (item.raw_score) {
       rawBadge.textContent = (type === 'vector' ? '' : 'kw ') + item.raw_score;
     } else {
       rawBadge.textContent = '';
     }
-    
+
     document.getElementById('modalExp').textContent = `Exp: ${item.exp_years || 'Not specified'} years`;
     document.getElementById('modalHighlights').textContent = item.highlights || 'No highlights available.';
     document.getElementById('modalFullText').textContent = item.full_text || item.text;
-    
+
     const kwsEl = document.getElementById('modalKws');
     kwsEl.innerHTML = '';
     if (item.kws) {
@@ -398,36 +424,76 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
       kwsEl.innerHTML = '<span class="chip" style="opacity:0.5">No keywords</span>';
     }
-    
+
     cvModal.classList.remove('hidden');
   }
 
   // Clear results on load
-  renderResults('sql-results', [], 'sql');
-  renderResults('vector-results', [], 'vector');
+  renderResults('sql-results', [], 'sql', '');
+  renderResults('vector-results', [], 'vector', '');
 
-  // ── CV Management — sample data (no /api/cvs endpoint yet) ───────────────
-  const cvData = [
-    { id: 'CAND-001', pos: 'Data Scientist',    kws: 'Python, ML, PyTorch',  exp: '3', score: '—' },
-    { id: 'CAND-002', pos: 'Backend Developer', kws: 'Java, Spring Boot',    exp: '5', score: '—' },
-    { id: 'CAND-003', pos: 'Frontend Developer', kws: 'React, Vue, TS',      exp: '2', score: '—' },
-    { id: 'CAND-004', pos: 'DevOps Engineer',   kws: 'Docker, K8s, AWS',    exp: '6', score: '—' },
-  ];
+  const cvSearchInput = document.getElementById('cv-search');
+  const jdSearchInput = document.getElementById('jd-search');
 
   const renderTable = (tbodyId, data, columns) => {
     const tbody = document.getElementById(tbodyId);
     if (!tbody) return;
     tbody.innerHTML = '';
+    if (data.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No records found.</td></tr>';
+      return;
+    }
     data.forEach(row => {
       const tr = document.createElement('tr');
       columns.forEach(col => {
         const td = document.createElement('td');
-        td.innerHTML = col === 'score' ? `<span class="score-badge">${row[col]}</span>` : row[col];
+        td.innerHTML = row[col] ?? '';
         tr.appendChild(td);
       });
       tbody.appendChild(tr);
     });
   };
 
-  renderTable('cv-tbody', cvData, ['id', 'pos', 'kws', 'exp', 'score']);
+  async function loadCVs(query = '') {
+    try {
+      const url = `${API_BASE}/api/cvs?query=${encodeURIComponent(query)}&limit=100`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`CV endpoint returned ${res.status}`);
+      const data = await res.json();
+      renderTable('cv-tbody', data.cvs, ['id', 'position', 'keyword', 'exp_years', 'looking_for']);
+    } catch (err) {
+      console.error('Failed to load CVs', err);
+      renderTable('cv-tbody', []);
+    }
+  }
+
+  async function loadJDs(query = '') {
+    try {
+      const url = `${API_BASE}/api/jds?query=${encodeURIComponent(query)}&limit=100`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`JD endpoint returned ${res.status}`);
+      const data = await res.json();
+      renderTable('jd-tbody', data.jds, ['id', 'position', 'company', 'keyword', 'exp_years']);
+    } catch (err) {
+      console.error('Failed to load JDs', err);
+      renderTable('jd-tbody', []);
+    }
+  }
+
+  if (cvSearchInput) {
+    cvSearchInput.addEventListener('input', () => {
+      clearTimeout(cvSearchInput._debounceId);
+      cvSearchInput._debounceId = setTimeout(() => loadCVs(cvSearchInput.value.trim()), 250);
+    });
+  }
+
+  if (jdSearchInput) {
+    jdSearchInput.addEventListener('input', () => {
+      clearTimeout(jdSearchInput._debounceId);
+      jdSearchInput._debounceId = setTimeout(() => loadJDs(jdSearchInput.value.trim()), 250);
+    });
+  }
+
+  loadCVs();
+  loadJDs();
 });

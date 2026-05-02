@@ -41,7 +41,19 @@
     <div class="sidebar-section">
       <div class="sidebar-title">Results</div>
       <div class="sidebar-label">Top-N Results: <span id="topNValue">5</span></div>
-      <input type="range" min="1" max="20" value="5" class="form-range" id="topNRange">
+      <input type="range" min="1" max="20" value="5" class="form-range" id="topNRange"
+        oninput="document.getElementById('topNValue').textContent = this.value">
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-title">Search Tuning</div>
+      <div class="sidebar-label">Min Match Score: <span id="minScoreValue">50</span>%</div>
+      <input type="range" min="0" max="100" value="50" class="form-range" id="minScoreRange"
+        oninput="document.getElementById('minScoreValue').textContent = this.value">
+      <div class="sidebar-label" style="margin-top: 16px;">Vector Threshold: <span id="vectorThresholdValue">80</span>%
+      </div>
+      <input type="range" min="0" max="100" value="80" class="form-range" id="vectorThresholdRange"
+        oninput="document.getElementById('vectorThresholdValue').textContent = this.value">
     </div>
 
     <div class="data-status">
@@ -87,7 +99,9 @@
     <div class="content-scroll-area">
       <!-- Tab Contents -->
       <div class="tab-content" id="search-tab">
-        <div id="errorBanner" style="display:none; background:#ffdad6; color:#93000a; padding:14px 20px; border-radius:12px; margin-bottom:24px; font-size:0.9rem; line-height:1.5;"></div>
+        <div id="errorBanner"
+          style="display:none; background:#ffdad6; color:#93000a; padding:14px 20px; border-radius:12px; margin-bottom:24px; font-size:0.9rem; line-height:1.5;">
+        </div>
         <div class="search-bar-container glass-panel">
           <div class="search-bar">
             <div class="select-wrapper target-select-wrapper">
@@ -106,7 +120,9 @@
               <button class="btn-primary" id="analyzeBtn">
                 <i class="ph ph-sparkle"></i> Analyze
               </button>
-              <button class="btn-primary" id="refreshBtn" style="background:var(--surface-container-highest); color:var(--on-surface); padding: 0 16px;" title="Clear Search">
+              <button class="btn-primary" id="refreshBtn"
+                style="background:var(--surface-container-highest); color:var(--on-surface); padding: 0 16px;"
+                title="Clear Search">
                 <i class="ph ph-arrows-counter-clockwise"></i>
               </button>
             </div>
@@ -241,7 +257,8 @@
           <h2 class="page-title">Candidate Directory</h2>
           <div class="search-box glass-panel-sm">
             <i class="ph ph-magnifying-glass search-icon"></i>
-            <input type="text" placeholder="Search by name, skills, or experience..." class="table-search">
+            <input id="cv-search" type="text" placeholder="Search by role, skills, or experience..."
+              class="table-search">
           </div>
         </div>
         <div class="data-table-wrapper">
@@ -252,7 +269,7 @@
                 <th>Primary Role</th>
                 <th>Key Skills</th>
                 <th>Exp. (Yrs)</th>
-                <th>Match Score</th>
+                <th>Keyword</th>
               </tr>
             </thead>
             <tbody id="cv-tbody"></tbody>
@@ -261,14 +278,30 @@
       </div>
 
       <div class="tab-content hidden" id="jd-management-tab">
-        <h2 class="page-title">Job Descriptions</h2>
-        <div class="empty-state" style="margin-top: 60px; padding: 80px 40px; border-radius: 16px; background: var(--surface-container-lowest);">
-          <i class="ph ph-buildings" style="font-size: 3rem; color: var(--on-surface-variant); opacity: 0.4; display: block; margin-bottom: 16px;"></i>
-          <p style="font-size: 1.1rem; margin-bottom: 8px; color: var(--on-surface-variant);">JD Management not yet available</p>
-          <p style="font-size: 0.875rem; color: var(--on-surface-variant); opacity: 0.7;">The backend currently only indexes CV data. JD support will be added in a future version.</p>
+        <div class="page-header">
+          <h2 class="page-title">Job Descriptions</h2>
+          <div class="search-box glass-panel-sm">
+            <i class="ph ph-magnifying-glass search-icon"></i>
+            <input id="jd-search" type="text" placeholder="Search by JD title, company, or keywords..."
+              class="table-search">
+          </div>
+        </div>
+        <div class="data-table-wrapper">
+          <table class="data-table jd-table">
+            <thead>
+              <tr>
+                <th>JD ID</th>
+                <th>Position</th>
+                <th>Company</th>
+                <th>Keywords</th>
+                <th>Exp. (Yrs)</th>
+              </tr>
+            </thead>
+            <tbody id="jd-tbody"></tbody>
+          </table>
         </div>
       </div>
-      </div>
+    </div>
     </div>
   </main>
 

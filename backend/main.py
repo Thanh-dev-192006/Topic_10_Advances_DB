@@ -25,6 +25,7 @@ cur = None
 model = None
 cv_col = None
 cv_count = 0
+jd_count = 0
 milvus_connected = False
 
 def clean_text(text):
@@ -69,6 +70,30 @@ def startup_event():
     conn = sqlite3.connect(":memory:", check_same_thread=False)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
+
+    print("Loading job description dataset...")
+    cleaned_jd = []
+    try:
+        jd_data = load_dataset("lang-uk/recruitment-dataset-job-descriptions-english", split="train[:1000]")
+        for i, item in enumerate(jd_data, start=1):
+            position = clean_text(item.get("Position") or "Unknown Position")
+            description = clean_text(item.get("Long Description") or "")
+            company = clean_text(item.get("Company Name") or "Unknown Company")
+            keyword = clean_text(item.get("Primary Keyword") or "")
+            exp_years = clean_text(str(item.get("Exp Years") or ""))
+            if len(description) < 20:
+                continue
+            cleaned_jd.append({
+                "id": i,
+                "position": truncate_text(position, 300),
+                "description": truncate_text(description, 3000),
+                "company": truncate_text(company, 200),
+                "keyword": truncate_text(keyword, 300),
+                "exp_years": truncate_text(exp_years, 50),
+            })
+    except Exception as e:
+        print(f"JD load warning: {e}")
+
     cur.execute("""
         CREATE TABLE cvs (
             id INTEGER PRIMARY KEY, position TEXT, cv_text TEXT,
@@ -79,9 +104,23 @@ def startup_event():
         "INSERT INTO cvs VALUES (:id, :position, :cv_text, :highlights, :keyword, :exp_years, :looking_for)",
         cleaned_cv
     )
+
+    cur.execute("""
+        CREATE TABLE job_descriptions (
+            id INTEGER PRIMARY KEY, position TEXT, description TEXT,
+            company TEXT, keyword TEXT, exp_years TEXT
+        )
+    """)
+    if cleaned_jd:
+        cur.executemany(
+            "INSERT INTO job_descriptions VALUES (:id, :position, :description, :company, :keyword, :exp_years)",
+            cleaned_jd
+        )
+
     conn.commit()
     cv_count = len(cleaned_cv)
-    print(f"SQLite ready: {cv_count} CVs")
+    jd_count = len(cleaned_jd)
+    print(f"SQLite ready: {cv_count} CVs, {jd_count} JDs")
 
     print("Loading SentenceTransformer model...")
     model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
@@ -104,11 +143,42 @@ def startup_event():
 def status():
     return {
         "cv_count": cv_count,
+        "jd_count": jd_count,
         "milvus_connected": milvus_connected,
         "sql_engine": "SQLite (in-memory)",
         "embedding_model": "paraphrase-multilingual-MiniLM-L12-v2",
         "vector_dim": 384,
     }
+
+
+# ── CV / JD Management endpoints ─────────────────────────────────────────────
+
+@app.get("/api/cvs")
+def list_cvs(query: str = Query(""), limit: int = 100):
+    q = f"%{query}%"
+    cur.execute(
+        "SELECT id, position, keyword, exp_years, cv_text, highlights, looking_for"
+        " FROM cvs"
+        " WHERE position LIKE ? OR keyword LIKE ? OR cv_text LIKE ? OR highlights LIKE ?"
+        " ORDER BY id LIMIT ?",
+        (q, q, q, q, limit)
+    )
+    rows = [dict(row) for row in cur.fetchall()]
+    return {"cvs": rows}
+
+
+@app.get("/api/jds")
+def list_jds(query: str = Query(""), limit: int = 100):
+    q = f"%{query}%"
+    cur.execute(
+        "SELECT id, position, company, keyword, exp_years, description"
+        " FROM job_descriptions"
+        " WHERE position LIKE ? OR company LIKE ? OR keyword LIKE ? OR description LIKE ?"
+        " ORDER BY id LIMIT ?",
+        (q, q, q, q, limit)
+    )
+    rows = [dict(row) for row in cur.fetchall()]
+    return {"jds": rows}
 
 
 # ── Search endpoint ──────────────────────────────────────────────────────────
@@ -121,10 +191,19 @@ class SearchResponse(BaseModel):
     vector_time_ms: float
     sql_results: list[dict]
     vector_results: list[dict]
+    sql_filtered_reason: str = ""
+    vector_filtered_reason: str = ""
 
 @app.get("/api/search", response_model=SearchResponse)
-def search(query: str = Query(...), limit: int = 5):
+def search(
+    query: str = Query(...),
+    limit: int = 5,
+    min_score: int = Query(0, ge=0, le=100),
+    vector_threshold: int = Query(0, ge=0, le=100),
+):
     keywords = extract_keywords(query)
+    min_score = max(0, min(100, min_score))
+    vector_threshold = max(0, min(100, vector_threshold))
 
     # --- SQL LIKE SEARCH ---
     sql_start = time.perf_counter()
@@ -161,6 +240,7 @@ def search(query: str = Query(...), limit: int = 5):
             f" ORDER BY match_score DESC LIMIT ?"
         )
 
+        sql_fetch_limit = 1000  # Fetch all candidates first, then filter by Search Tuning
         n_all = len(keywords)
         n_partial = min(n_all, max(2, n_all * 2 // 3))
         seen: set[int] = set()
@@ -173,9 +253,9 @@ def search(query: str = Query(...), limit: int = 5):
         seen_ids = set()
         sql_strategies = []
         for n_required, strategy_name in thresholds:
-            if len(raw_results) >= limit:
+            if len(raw_results) >= sql_fetch_limit:
                 break
-            cur.execute(outer_sql, kw_params + kw_params + [n_required, limit])
+            cur.execute(outer_sql, kw_params + kw_params + [n_required, sql_fetch_limit])
             added_this_round = False
             for row in cur.fetchall():
                 if row["id"] not in seen_ids:
@@ -213,6 +293,14 @@ def search(query: str = Query(...), limit: int = 5):
                 "kws": row["keyword"]
             })
 
+        if min_score > 0:
+            sql_results = [item for item in sql_results if int(item["score"]) >= min_score]
+        sql_results = sql_results[:limit]
+
+        sql_filtered_reason = ""
+        if min_score > 0 and len(sql_results) == 0:
+            sql_filtered_reason = f"Does not satisfy min match score = {min_score}%"
+
     sql_time_ms = (time.perf_counter() - sql_start) * 1000
 
     # --- MILVUS VECTOR SEARCH ---
@@ -221,7 +309,7 @@ def search(query: str = Query(...), limit: int = 5):
     if cv_col is not None:
         query_vector = model.encode([query])
         # Fetch more candidates for re-ranking (Hybrid approach)
-        fetch_limit = limit * 4
+        fetch_limit = 1000  # Fetch all candidates first, then filter by Search Tuning
         v_res = cv_col.search(
             data=query_vector.tolist(),
             anns_field="vector",
@@ -258,9 +346,11 @@ def search(query: str = Query(...), limit: int = 5):
             # Sort descending by the new hybrid score
             scored_hits.sort(key=lambda x: x[0], reverse=True)
             
-            for i, (final_score, hit) in enumerate(scored_hits[:limit]):
+            for i, (final_score, hit) in enumerate(scored_hits):
                 # Cap the percentage at 100% just in case
                 score_pct = min(100, round(max(0.0, final_score) * 100))
+                if score_pct < vector_threshold:
+                    continue
                 
                 # Show hybrid components in raw_score
                 bonus_str = f" + {(final_score - hit.score):.2f} kw" if final_score > hit.score else ""
@@ -277,7 +367,13 @@ def search(query: str = Query(...), limit: int = 5):
                     "exp_years": extra.get("exp_years", ""),
                     "kws": hit.entity.get("keyword")
                 })
+                if len(vector_results) >= limit:
+                    break
     vector_time_ms = (time.perf_counter() - vector_start) * 1000
+
+    vector_filtered_reason = ""
+    if vector_threshold > 0 and len(vector_results) == 0:
+        vector_filtered_reason = f"Does not satisfy vector threshold = {vector_threshold}%"
 
     return {
         "query": query,
@@ -287,6 +383,8 @@ def search(query: str = Query(...), limit: int = 5):
         "vector_time_ms": vector_time_ms,
         "sql_results": sql_results,
         "vector_results": vector_results,
+        "sql_filtered_reason": sql_filtered_reason,
+        "vector_filtered_reason": vector_filtered_reason,
     }
 
 # ── Auto-suggest endpoint ───────────────────────────────────────────────────
