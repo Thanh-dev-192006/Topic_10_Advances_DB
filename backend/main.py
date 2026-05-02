@@ -2,11 +2,12 @@ from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-import sqlite3
+import psycopg2
+import psycopg2.extras
+import configparser
 import time
 import re
 import os
-from datasets import load_dataset
 from sentence_transformers import SentenceTransformer
 from pymilvus import connections, Collection
 
@@ -32,12 +33,6 @@ def clean_text(text):
     if not text or not isinstance(text, str): return ""
     return re.sub(r'\s+', ' ', text).strip()
 
-def truncate_text(text, max_length=500):
-    if len(text) <= max_length: return text
-    truncated = text[:max_length]
-    last_space = truncated.rfind(" ")
-    return truncated[:last_space] if last_space > 0 else truncated
-
 def extract_keywords(query: str) -> list[str]:
     STOP_WORDS = {"with", "and", "the", "for", "in", "of", "to", "a", "an", "is", "are",
                   "that", "this", "have", "has", "been", "will", "can", "from", "or", "on",
@@ -45,82 +40,58 @@ def extract_keywords(query: str) -> list[str]:
     words = re.findall(r'[a-zA-Z0-9]+', query.lower())
     return [w for w in words if len(w) >= 2 and w not in STOP_WORDS]
 
+def load_db_config(config_file: str = "config.properties") -> dict:
+    config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "Postgre-setup", config_file))
+    default_config = {
+        "host": os.getenv("PG_HOST", "localhost"),
+        "port": int(os.getenv("PG_PORT", "5432")),
+        "dbname": os.getenv("PG_DB", "recruitment_db"),
+        "user": os.getenv("PG_USER", "postgres"),
+        "password": os.getenv("PG_PASSWORD", ""),
+    }
+
+    if not os.path.exists(config_path):
+        return default_config
+
+    config = configparser.ConfigParser()
+    try:
+        config.read(config_path, encoding="utf-8")
+    except configparser.MissingSectionHeaderError:
+        with open(config_path, "r", encoding="utf-8") as f:
+            raw_config = f.read()
+        config.read_string("[postgresql]\n" + raw_config)
+
+    if "postgresql" not in config:
+        return default_config
+
+    pg = config["postgresql"]
+    return {
+        "host": pg.get("host", default_config["host"]),
+        "port": int(pg.get("port", str(default_config["port"]))),
+        "dbname": pg.get("dbname", default_config["dbname"]),
+        "user": pg.get("user", default_config["user"]),
+        "password": pg.get("password", default_config["password"]),
+    }
+
 @app.on_event("startup")
 def startup_event():
-    global conn, cur, model, cv_col, cv_count, milvus_connected
-    print("Loading datasets...")
-    # Match the 1000-CV count already indexed in Milvus (see datasets_v2.ipynb)
-    cv_data = load_dataset("lang-uk/recruitment-dataset-candidate-profiles-english", split="train[:1000]")
-
-    cleaned_cv = []
-    for i, item in enumerate(cv_data):
-        cv_text = clean_text(item.get("CV"))
-        if len(cv_text) >= 20:
-            cleaned_cv.append({
-                "id": i + 1,
-                "position": clean_text(item.get("Position")) or "Unknown",
-                "cv_text": truncate_text(cv_text, 2000),
-                "highlights": clean_text(item.get("Highlights")) or "",
-                "keyword": clean_text(item.get("Primary Keyword")) or "",
-                "exp_years": clean_text(str(item.get("Experience Years") or "")),
-                "looking_for": clean_text(item.get("Looking For")) or "",
-            })
-
-    print("Initializing SQLite...")
-    conn = sqlite3.connect(":memory:", check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
-
-    print("Loading job description dataset...")
-    cleaned_jd = []
+    global conn, cur, model, cv_col, cv_count, jd_count, milvus_connected
+    
+    print("Connecting to PostgreSQL...")
+    db_config = load_db_config()
     try:
-        jd_data = load_dataset("lang-uk/recruitment-dataset-job-descriptions-english", split="train[:1000]")
-        for i, item in enumerate(jd_data, start=1):
-            position = clean_text(item.get("Position") or "Unknown Position")
-            description = clean_text(item.get("Long Description") or "")
-            company = clean_text(item.get("Company Name") or "Unknown Company")
-            keyword = clean_text(item.get("Primary Keyword") or "")
-            exp_years = clean_text(str(item.get("Exp Years") or ""))
-            if len(description) < 20:
-                continue
-            cleaned_jd.append({
-                "id": i,
-                "position": truncate_text(position, 300),
-                "description": truncate_text(description, 3000),
-                "company": truncate_text(company, 200),
-                "keyword": truncate_text(keyword, 300),
-                "exp_years": truncate_text(exp_years, 50),
-            })
+        conn = psycopg2.connect(**db_config)
+        conn.autocommit = True
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        cur.execute("SELECT COUNT(*) FROM cvs")
+        cv_count = cur.fetchone()["count"]
+        
+        cur.execute("SELECT COUNT(*) FROM job_descriptions")
+        jd_count = cur.fetchone()["count"]
+        print(f"PostgreSQL ready: {cv_count} CVs, {jd_count} JDs")
     except Exception as e:
-        print(f"JD load warning: {e}")
-
-    cur.execute("""
-        CREATE TABLE cvs (
-            id INTEGER PRIMARY KEY, position TEXT, cv_text TEXT,
-            highlights TEXT, keyword TEXT, exp_years TEXT, looking_for TEXT
-        )
-    """)
-    cur.executemany(
-        "INSERT INTO cvs VALUES (:id, :position, :cv_text, :highlights, :keyword, :exp_years, :looking_for)",
-        cleaned_cv
-    )
-
-    cur.execute("""
-        CREATE TABLE job_descriptions (
-            id INTEGER PRIMARY KEY, position TEXT, description TEXT,
-            company TEXT, keyword TEXT, exp_years TEXT
-        )
-    """)
-    if cleaned_jd:
-        cur.executemany(
-            "INSERT INTO job_descriptions VALUES (:id, :position, :description, :company, :keyword, :exp_years)",
-            cleaned_jd
-        )
-
-    conn.commit()
-    cv_count = len(cleaned_cv)
-    jd_count = len(cleaned_jd)
-    print(f"SQLite ready: {cv_count} CVs, {jd_count} JDs")
+        print(f"PostgreSQL connection error: {e}")
 
     print("Loading SentenceTransformer model...")
     model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
@@ -145,7 +116,7 @@ def status():
         "cv_count": cv_count,
         "jd_count": jd_count,
         "milvus_connected": milvus_connected,
-        "sql_engine": "SQLite (in-memory)",
+        "sql_engine": "PostgreSQL",
         "embedding_model": "paraphrase-multilingual-MiniLM-L12-v2",
         "vector_dim": 384,
     }
@@ -159,8 +130,8 @@ def list_cvs(query: str = Query(""), limit: int = 100):
     cur.execute(
         "SELECT id, position, keyword, exp_years, cv_text, highlights, looking_for"
         " FROM cvs"
-        " WHERE position LIKE ? OR keyword LIKE ? OR cv_text LIKE ? OR highlights LIKE ?"
-        " ORDER BY id LIMIT ?",
+        " WHERE position ILIKE %s OR keyword ILIKE %s OR cv_text ILIKE %s OR highlights ILIKE %s"
+        " ORDER BY id LIMIT %s",
         (q, q, q, q, limit)
     )
     rows = [dict(row) for row in cur.fetchall()]
@@ -173,8 +144,8 @@ def list_jds(query: str = Query(""), limit: int = 100):
     cur.execute(
         "SELECT id, position, company, keyword, exp_years, description"
         " FROM job_descriptions"
-        " WHERE position LIKE ? OR company LIKE ? OR keyword LIKE ? OR description LIKE ?"
-        " ORDER BY id LIMIT ?",
+        " WHERE position ILIKE %s OR company ILIKE %s OR keyword ILIKE %s OR description ILIKE %s"
+        " ORDER BY id LIMIT %s",
         (q, q, q, q, limit)
     )
     rows = [dict(row) for row in cur.fetchall()]
@@ -213,13 +184,13 @@ def search(
 
     if keywords:
         score_check = (
-            "(CASE WHEN position LIKE ? THEN 2 ELSE 0 END"
-            " + CASE WHEN keyword LIKE ? THEN 2 ELSE 0 END"
-            " + CASE WHEN cv_text LIKE ? THEN 1 ELSE 0 END"
-            " + CASE WHEN highlights LIKE ? THEN 1 ELSE 0 END)"
+            "(CASE WHEN position ILIKE %s THEN 2 ELSE 0 END"
+            " + CASE WHEN keyword ILIKE %s THEN 2 ELSE 0 END"
+            " + CASE WHEN cv_text ILIKE %s THEN 1 ELSE 0 END"
+            " + CASE WHEN highlights ILIKE %s THEN 1 ELSE 0 END)"
         )
         count_check = (
-            "(CASE WHEN cv_text LIKE ? OR position LIKE ? OR highlights LIKE ? OR keyword LIKE ?"
+            "(CASE WHEN cv_text ILIKE %s OR position ILIKE %s OR highlights ILIKE %s OR keyword ILIKE %s"
             " THEN 1 ELSE 0 END)"
         )
 
@@ -235,9 +206,9 @@ def search(
         )
         outer_sql = (
             f"SELECT id, position, keyword, cv_text, highlights, exp_years, match_score, keyword_count"
-            f" FROM ({subquery})"
-            f" WHERE keyword_count >= ?"
-            f" ORDER BY match_score DESC LIMIT ?"
+            f" FROM ({subquery}) q"
+            f" WHERE keyword_count >= %s"
+            f" ORDER BY match_score DESC LIMIT %s"
         )
 
         sql_fetch_limit = 1000  # Fetch all candidates first, then filter by Search Tuning
@@ -255,7 +226,8 @@ def search(
         for n_required, strategy_name in thresholds:
             if len(raw_results) >= sql_fetch_limit:
                 break
-            cur.execute(outer_sql, kw_params + kw_params + [n_required, sql_fetch_limit])
+            # Note: in psycopg2, pass parameters as a tuple
+            cur.execute(outer_sql, tuple(kw_params + kw_params + [n_required, sql_fetch_limit]))
             added_this_round = False
             for row in cur.fetchall():
                 if row["id"] not in seen_ids:
@@ -288,9 +260,9 @@ def search(
                 "raw_score": f"{row['keyword_count']}/{len(keywords)} kw",
                 "text": row["cv_text"][:150] + "...",
                 "full_text": row["cv_text"],
-                "highlights": row["highlights"],
-                "exp_years": row["exp_years"],
-                "kws": row["keyword"]
+                "highlights": row["highlights"] or "",
+                "exp_years": row["exp_years"] or "",
+                "kws": row["keyword"] or ""
             })
 
         if min_score > 0:
@@ -320,9 +292,10 @@ def search(
 
         hits = v_res[0]
         if hits:
-            # Fetch extra metadata from SQLite
+            # Fetch extra metadata from PostgreSQL
             hit_ids = [hit.id for hit in hits]
-            cur.execute(f"SELECT id, highlights, exp_years FROM cvs WHERE id IN ({','.join(['?']*len(hit_ids))})", hit_ids)
+            placeholders = ','.join(['%s']*len(hit_ids))
+            cur.execute(f"SELECT id, highlights, exp_years FROM cvs WHERE id IN ({placeholders})", tuple(hit_ids))
             extra_data = {r["id"]: dict(r) for r in cur.fetchall()}
 
             scored_hits = []
@@ -394,7 +367,7 @@ def suggest(q: str = Query("")):
     if len(q) < 2: return {"suggestions": []}
     # Search for matching positions or keywords
     cur.execute(
-        "SELECT DISTINCT position FROM cvs WHERE position LIKE ? LIMIT 50",
+        "SELECT DISTINCT position FROM cvs WHERE position ILIKE %s LIMIT 50",
         (f"%{q}%",)
     )
     
@@ -426,9 +399,9 @@ def stats():
     # Experience distribution
     cur.execute("""
         SELECT 
-            SUM(CASE WHEN exp_years LIKE '%1%' OR exp_years LIKE '%2%' THEN 1 ELSE 0 END) as junior,
-            SUM(CASE WHEN exp_years LIKE '%3%' OR exp_years LIKE '%4%' OR exp_years LIKE '%5%' THEN 1 ELSE 0 END) as mid,
-            SUM(CASE WHEN exp_years LIKE '%6%' OR exp_years LIKE '%7%' OR exp_years LIKE '%8%' OR exp_years LIKE '%9%' OR exp_years LIKE '%10%' THEN 1 ELSE 0 END) as senior
+            SUM(CASE WHEN exp_years ILIKE '%1%' OR exp_years ILIKE '%2%' THEN 1 ELSE 0 END) as junior,
+            SUM(CASE WHEN exp_years ILIKE '%3%' OR exp_years ILIKE '%4%' OR exp_years ILIKE '%5%' THEN 1 ELSE 0 END) as mid,
+            SUM(CASE WHEN exp_years ILIKE '%6%' OR exp_years ILIKE '%7%' OR exp_years ILIKE '%8%' OR exp_years ILIKE '%9%' OR exp_years ILIKE '%10%' THEN 1 ELSE 0 END) as senior
         FROM cvs
     """)
     exp = dict(cur.fetchone())
@@ -438,7 +411,7 @@ def stats():
     positions = [dict(row) for row in cur.fetchall()]
     
     return {
-        "experience": {"Junior (1-2y)": exp["junior"] or 0, "Mid (3-5y)": exp["mid"] or 0, "Senior (6y+)": exp["senior"] or 0},
+        "experience": {"Junior (1-2y)": int(exp["junior"] or 0), "Mid (3-5y)": int(exp["mid"] or 0), "Senior (6y+)": int(exp["senior"] or 0)},
         "top_positions": positions
     }
 
