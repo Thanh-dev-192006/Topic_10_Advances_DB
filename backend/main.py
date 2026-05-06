@@ -304,14 +304,20 @@ def search(
                 kw = (hit.entity.get("keyword") or "").lower()
                 text = (hit.entity.get("cv_text") or "").lower()
                 
-                # Apply lexical bonus to vector score
-                bonus = 0.0
+                # Apply lexical bonus to vector score (Hybrid Re-ranking)
+                # FIX: normalize by keyword count + hard cap to prevent long queries
+                # from inflating scores of irrelevant CVs via common English words.
+                MAX_BONUS = 0.25
+                raw_bonus = 0.0
                 if keywords:
                     for k in keywords:
-                        # Exact word matching or substring matching
-                        if k in pos: bonus += 0.15
-                        elif k in kw: bonus += 0.10
-                        elif k in text: bonus += 0.05
+                        if k in pos:  raw_bonus += 0.15
+                        elif k in kw: raw_bonus += 0.10
+                        elif k in text: raw_bonus += 0.05
+                    # Normalize: divide by sqrt(keywords) to dampen growth for long queries
+                    bonus = min(MAX_BONUS, raw_bonus / (len(keywords) ** 0.5))
+                else:
+                    bonus = 0.0
                 
                 final_score = hit.score + bonus
                 scored_hits.append((final_score, hit))
@@ -406,13 +412,36 @@ def stats():
     """)
     exp = dict(cur.fetchone())
     
-    # Top positions
-    cur.execute("SELECT position, COUNT(*) as count FROM cvs GROUP BY position ORDER BY count DESC LIMIT 5")
+    # Top positions (normalize case + whitespace to merge duplicates like "2d artist" / "2D Artist")
+    cur.execute("""
+        SELECT INITCAP(LOWER(TRIM(position))) as position, COUNT(*) as count
+        FROM cvs
+        WHERE position IS NOT NULL AND TRIM(position) != ''
+        GROUP BY LOWER(TRIM(position))
+        ORDER BY count DESC
+        LIMIT 5
+    """)
     positions = [dict(row) for row in cur.fetchall()]
+    
+    # Top skills (normalize case + whitespace)
+    cur.execute("""
+        SELECT INITCAP(LOWER(TRIM(kw))) as skill, COUNT(*) as count 
+        FROM (
+            SELECT unnest(string_to_array(keyword, ',')) as kw 
+            FROM cvs 
+            WHERE keyword IS NOT NULL
+        ) sub 
+        WHERE TRIM(kw) != ''
+        GROUP BY LOWER(TRIM(kw))
+        ORDER BY count DESC 
+        LIMIT 5
+    """)
+    top_skills = [dict(row) for row in cur.fetchall()]
     
     return {
         "experience": {"Junior (1-2y)": int(exp["junior"] or 0), "Mid (3-5y)": int(exp["mid"] or 0), "Senior (6y+)": int(exp["senior"] or 0)},
-        "top_positions": positions
+        "top_positions": positions,
+        "top_skills": top_skills
     }
 
 # ── Serve frontend as static files (fixes file:// CORS issue) ───────────────

@@ -6,6 +6,21 @@ const API_BASE = window.location.protocol === 'file:'
   ? 'http://127.0.0.1:8001'
   : '';
 
+// ── Session-level analytics state ────────────────────────────────────────────
+const sessionStats = {
+  searchCount: 0,
+  sqlTimes: [],
+  vectorTimes: [],
+  strategyHistory: { AND: 0, PARTIAL: 0, OR: 0 },
+  sessionKeywords: {},
+  totalSql: 0,
+  totalVec: 0,
+  scoreBuckets: {
+    sql: { strong: 0, partial: 0, weak: 0 },
+    vec: { strong: 0, partial: 0, weak: 0 }
+  }
+};
+
 document.addEventListener('DOMContentLoaded', () => {
   const controls = [
     { rangeId: 'topNRange', valueId: 'topNValue' },
@@ -57,13 +72,28 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // Dashboard
       const dashCvEl = document.getElementById('dash-cv-count');
+      const dashJdEl = document.getElementById('dash-jd-count');
+      const dashRatioEl = document.getElementById('dash-ratio');
       const dashModelEl = document.getElementById('dash-model');
       const dashDimEl = document.getElementById('dash-dim');
       if (dashCvEl) dashCvEl.textContent = data.cv_count.toLocaleString();
+      if (dashJdEl) dashJdEl.textContent = data.jd_count.toLocaleString();
+      if (dashRatioEl) {
+        const ratio = data.jd_count > 0 ? (data.cv_count / data.jd_count).toFixed(1) : 0;
+        dashRatioEl.textContent = `${ratio} CVs/JD`;
+      }
       if (dashModelEl) dashModelEl.textContent = 'MiniLM-L12-v2';
       if (dashDimEl) dashDimEl.textContent = data.vector_dim;
 
-      // Vector search badge
+      // Milvus dashboard card
+      const dashMilvusEl = document.getElementById('dash-milvus-status');
+      if (dashMilvusEl) {
+        dashMilvusEl.textContent = data.milvus_connected ? 'Online ✓' : 'Offline ✗';
+        dashMilvusEl.style.color = data.milvus_connected ? 'var(--vector-logic)' : 'var(--sql-logic)';
+        dashMilvusEl.style.fontWeight = '700';
+      }
+
+      // Vector search badge (Search tab)
       const vecBadge = document.querySelector('.col-vector .strategy-badge');
       if (vecBadge && !data.milvus_connected) {
         vecBadge.textContent = 'Milvus offline';
@@ -76,20 +106,50 @@ document.addEventListener('DOMContentLoaded', () => {
         if (statsRes.ok) {
           const statsData = await statsRes.json();
           const topPosEl = document.getElementById('dash-top-positions');
-          if (topPosEl) {
+          if (topPosEl && statsData.top_positions) {
+            const maxPos = Math.max(...statsData.top_positions.map(p => p.count), 1);
             topPosEl.innerHTML = statsData.top_positions.map(p => `
               <div class="dash-list-item">
-                <span class="label">${p.position || 'Unknown'}</span>
-                <span class="value">${p.count} CVs</span>
+                <div class="dash-list-content">
+                  <span class="label">${p.position || 'Unknown'}</span>
+                  <span class="value">${p.count} CVs</span>
+                </div>
+                <div class="progress-track">
+                  <div class="progress-fill" style="width: ${(p.count / maxPos) * 100}%"></div>
+                </div>
               </div>
             `).join('');
           }
+          
+          const topSkillsEl = document.getElementById('dash-top-skills');
+          if (topSkillsEl && statsData.top_skills) {
+            const maxSkill = Math.max(...statsData.top_skills.map(s => s.count), 1);
+            topSkillsEl.innerHTML = statsData.top_skills.map(s => `
+              <div class="dash-list-item">
+                <div class="dash-list-content">
+                  <span class="label">${s.skill || 'Unknown'}</span>
+                  <span class="value">${s.count} CVs</span>
+                </div>
+                <div class="progress-track">
+                  <div class="progress-fill" style="width: ${(s.count / maxSkill) * 100}%"></div>
+                </div>
+              </div>
+            `).join('');
+          }
+
           const expEl = document.getElementById('dash-experience');
-          if (expEl) {
+          if (expEl && statsData.experience) {
+            const expValues = Object.values(statsData.experience);
+            const maxExp = Math.max(...expValues, 1);
             expEl.innerHTML = Object.entries(statsData.experience).map(([k, v]) => `
               <div class="dash-list-item">
-                <span class="label">${k}</span>
-                <span class="value">${v} CVs</span>
+                <div class="dash-list-content">
+                  <span class="label">${k}</span>
+                  <span class="value">${v} CVs</span>
+                </div>
+                <div class="progress-track">
+                  <div class="progress-fill" style="width: ${(v / maxExp) * 100}%"></div>
+                </div>
               </div>
             `).join('');
           }
@@ -296,6 +356,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
       renderResults('sql-results', data.sql_results, 'sql', data.sql_filtered_reason);
       renderResults('vector-results', data.vector_results, 'vector', data.vector_filtered_reason);
+      updateLatencyChart(data.sql_time_ms, data.vector_time_ms);
+
+      // ── Update all session dashboard widgets ──────────────────────────────
+      sessionStats.searchCount++;
+      sessionStats.sqlTimes.push(data.sql_time_ms);
+      sessionStats.vectorTimes.push(data.vector_time_ms);
+      sessionStats.totalSql += data.sql_results.length;
+      sessionStats.totalVec += data.vector_results.length;
+      updateSessionCards();
+      updateScoreDistribution(data.sql_results, data.vector_results);
+      updateDonutChart();
+      updateStrategyHistory(data.sql_strategy);
+      updateSessionKeywords(data.keywords);
 
     } catch (err) {
       const isFileProtocol = window.location.protocol === 'file:';
@@ -307,6 +380,153 @@ document.addEventListener('DOMContentLoaded', () => {
       analyzeBtn.innerHTML = '<i class="ph ph-sparkle"></i> Analyze';
       analyzeBtn.disabled = false;
     }
+  }
+
+  let latencyHistory = [];
+  function updateLatencyChart(sqlTime, vectorTime) {
+    if (sqlTime !== undefined && vectorTime !== undefined) {
+      latencyHistory.push({ sql: sqlTime, vector: vectorTime });
+      if (latencyHistory.length > 5) {
+        latencyHistory.shift(); // Keep last 5
+      }
+    }
+
+    const chartEl = document.getElementById('latency-chart');
+    if (!chartEl) return;
+
+    if (latencyHistory.length === 0) {
+      chartEl.innerHTML = '<div class="empty-state" style="width:100%; border:none;">No searches performed yet.</div>';
+      return;
+    }
+
+    let maxTime = 10; // minimum scale
+    latencyHistory.forEach(item => {
+      if (item.sql > maxTime) maxTime = item.sql;
+      if (item.vector > maxTime) maxTime = item.vector;
+    });
+
+    chartEl.innerHTML = latencyHistory.map((item, index) => {
+      const sqlPct = Math.max((item.sql / maxTime) * 100, 2); // At least 2% height so it's visible
+      const vecPct = Math.max((item.vector / maxTime) * 100, 2);
+      return `
+        <div class="bar-group">
+          <div class="bar bar-sql tooltip" data-tip="${item.sql.toFixed(1)}ms" style="height: ${sqlPct}%"></div>
+          <div class="bar bar-vector tooltip" data-tip="${item.vector.toFixed(1)}ms" style="height: ${vecPct}%"></div>
+          <span>Q${index + 1}</span>
+        </div>
+      `;
+    }).join('');
+  }
+  updateLatencyChart(); // Initialize empty chart
+
+  // ── Session Dashboard Widgets ─────────────────────────────────────────────
+
+  function updateSessionCards() {
+    const $  = (id) => document.getElementById(id);
+    if ($('dash-search-count')) $('dash-search-count').textContent = sessionStats.searchCount;
+    if ($('dash-total-sql'))    $('dash-total-sql').textContent    = sessionStats.totalSql;
+    if ($('dash-total-vec'))    $('dash-total-vec').textContent    = sessionStats.totalVec;
+    if (sessionStats.sqlTimes.length > 0) {
+      const avg = sessionStats.sqlTimes.reduce((a, b) => a + b, 0) / sessionStats.sqlTimes.length;
+      if ($('dash-avg-sql')) $('dash-avg-sql').innerHTML = `${avg.toFixed(1)} <span class="metric-unit">ms</span>`;
+    }
+    if (sessionStats.vectorTimes.length > 0) {
+      const avg = sessionStats.vectorTimes.reduce((a, b) => a + b, 0) / sessionStats.vectorTimes.length;
+      if ($('dash-avg-vector')) $('dash-avg-vector').innerHTML = `${avg.toFixed(1)} <span class="metric-unit">ms</span>`;
+    }
+  }
+
+  function updateScoreDistribution(sqlResults, vectorResults) {
+    const tier = (score) => {
+      const p = parseInt(score, 10);
+      return p >= 60 ? 'strong' : p >= 30 ? 'partial' : 'weak';
+    };
+    sqlResults.forEach(r  => { sessionStats.scoreBuckets.sql[tier(r.score)]++; });
+    vectorResults.forEach(r => { sessionStats.scoreBuckets.vec[tier(r.score)]++; });
+
+    const el = document.getElementById('dash-score-dist');
+    if (!el) return;
+    const s = sessionStats.scoreBuckets.sql;
+    const v = sessionStats.scoreBuckets.vec;
+    const maxVal = Math.max(s.strong, s.partial, s.weak, v.strong, v.partial, v.weak, 1);
+
+    const rows = [
+      { label: '🟢 Strong 60–100%', key: 'strong' },
+      { label: '🟡 Partial 30–60%', key: 'partial' },
+      { label: '🔴 Weak   0–30%',  key: 'weak'    },
+    ];
+    el.innerHTML = rows.map(({ label, key }) => `
+      <div class="score-dist-row">
+        <span class="score-dist-label">${label}</span>
+        <div class="score-dist-bars">
+          <div class="score-dist-bar-wrapper">
+            <span class="score-dist-bar-label">SQL</span>
+            <div class="score-dist-track"><div class="score-dist-bar sql-bar" style="width:${(s[key]/maxVal)*100}%"></div></div>
+            <span class="score-dist-count">${s[key]}</span>
+          </div>
+          <div class="score-dist-bar-wrapper">
+            <span class="score-dist-bar-label">Vec</span>
+            <div class="score-dist-track"><div class="score-dist-bar vec-bar" style="width:${(v[key]/maxVal)*100}%"></div></div>
+            <span class="score-dist-count">${v[key]}</span>
+          </div>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function updateDonutChart() {
+    const total = sessionStats.totalSql + sessionStats.totalVec;
+    const ring  = document.getElementById('donut-ring');
+    const label = document.getElementById('donut-label');
+    const sqlCnt = document.getElementById('donut-sql-count');
+    const vecCnt = document.getElementById('donut-vec-count');
+    if (!ring) return;
+    if (total === 0) {
+      ring.style.background = 'conic-gradient(var(--outline-variant) 0% 100%)';
+      if (label) label.textContent = '—';
+      return;
+    }
+    const sqlPct = (sessionStats.totalSql / total) * 100;
+    ring.style.background = `conic-gradient(var(--sql-logic) 0% ${sqlPct}%, var(--vector-logic) ${sqlPct}% 100%)`;
+    if (label)  label.textContent  = `${Math.round(sqlPct)}%`;
+    if (sqlCnt) sqlCnt.textContent = sessionStats.totalSql;
+    if (vecCnt) vecCnt.textContent = sessionStats.totalVec;
+  }
+
+  function updateStrategyHistory(stratStr) {
+    if (!stratStr || stratStr === 'N/A') return;
+    const up = stratStr.toUpperCase();
+    if (up.includes('AND'))     sessionStats.strategyHistory.AND++;
+    if (up.includes('PARTIAL')) sessionStats.strategyHistory.PARTIAL++;
+    if (up.includes('OR'))      sessionStats.strategyHistory.OR++;
+    const max = Math.max(sessionStats.strategyHistory.AND, sessionStats.strategyHistory.PARTIAL, sessionStats.strategyHistory.OR, 1);
+    const set = (cntId, barId, val) => {
+      const c = document.getElementById(cntId); if (c) c.textContent = val;
+      const b = document.getElementById(barId);  if (b) b.style.width = `${(val / max) * 100}%`;
+    };
+    set('strat-and-count',     'strat-and-bar',     sessionStats.strategyHistory.AND);
+    set('strat-partial-count', 'strat-partial-bar', sessionStats.strategyHistory.PARTIAL);
+    set('strat-or-count',      'strat-or-bar',      sessionStats.strategyHistory.OR);
+  }
+
+  function updateSessionKeywords(keywords) {
+    keywords.forEach(kw => {
+      sessionStats.sessionKeywords[kw] = (sessionStats.sessionKeywords[kw] || 0) + 1;
+    });
+    const el = document.getElementById('dash-session-keywords');
+    if (!el) return;
+    const sorted = Object.entries(sessionStats.sessionKeywords).sort((a, b) => b[1] - a[1]).slice(0, 20);
+    if (sorted.length === 0) {
+      el.innerHTML = '<span style="opacity:0.5;font-style:italic;font-size:0.875rem">Search to populate...</span>';
+      return;
+    }
+    const maxKw = sorted[0][1];
+    el.innerHTML = sorted.map(([kw, cnt]) => {
+      const opacity = 0.55 + Math.min((cnt / maxKw) * 0.45, 0.45);
+      const fsize   = cnt > 2 ? '0.9rem' : '0.8rem';
+      const badge   = cnt > 1 ? ` <span style="opacity:0.65;font-size:0.7rem">×${cnt}</span>` : '';
+      return `<span class="chip chip-sql" style="opacity:${opacity};font-size:${fsize}">${kw}${badge}</span>`;
+    }).join('');
   }
 
   // ── Render helpers ────────────────────────────────────────────────────────

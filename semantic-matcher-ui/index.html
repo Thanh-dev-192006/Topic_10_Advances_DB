@@ -188,66 +188,179 @@
       </div>
 
       <div class="tab-content hidden" id="dashboard-tab">
-        <h2 class="page-title">System Performance</h2>
-        <div class="metric-cards mb-4">
+        <!-- Header -->
+        <div class="dash-page-header">
+          <h2 class="page-title">System Performance</h2>
+          <div class="dash-live-badge"><span class="live-dot"></span> Live</div>
+        </div>
+
+        <!-- System Overview Cards -->
+        <div class="dash-section-label"><i class="ph ph-database"></i> System Overview</div>
+        <div class="metric-cards mb-4" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));">
           <div class="metric-card">
-            <div class="metric-label">Total CVs Indexed</div>
-            <div class="metric-value" id="dash-cv-count">...</div>
+            <div class="metric-icon sql-icon"><i class="ph ph-file-text"></i></div>
+            <div class="metric-data">
+              <div class="metric-label">Total CVs</div>
+              <div class="metric-value" id="dash-cv-count">...</div>
+            </div>
           </div>
           <div class="metric-card">
-            <div class="metric-label">Vector Database</div>
-            <div class="metric-value text-md mt-2">Milvus</div>
+            <div class="metric-icon" style="background:#e3f2fd;color:#1565c0"><i class="ph ph-buildings"></i></div>
+            <div class="metric-data">
+              <div class="metric-label">Total JDs</div>
+              <div class="metric-value" id="dash-jd-count">...</div>
+            </div>
           </div>
           <div class="metric-card">
-            <div class="metric-label">Embedding Model</div>
-            <div class="metric-value text-md mt-2" id="dash-model" style="font-size:0.95rem">...</div>
+            <div class="metric-icon" style="background:#f3e5f5;color:#6a1b9a"><i class="ph ph-chart-pie-slice"></i></div>
+            <div class="metric-data">
+              <div class="metric-label">CV / JD Ratio</div>
+              <div class="metric-value" id="dash-ratio">...</div>
+            </div>
           </div>
           <div class="metric-card">
-            <div class="metric-label">Vector Dimension</div>
-            <div class="metric-value text-md mt-2" id="dash-dim">384</div>
+            <div class="metric-icon" style="background:#e8f5e9;color:#2e7d32"><i class="ph ph-graph"></i></div>
+            <div class="metric-data">
+              <div class="metric-label">Vector Dim</div>
+              <div class="metric-value">384D</div>
+            </div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-icon" style="background:#fff3e0;color:#e65100"><i class="ph ph-brain"></i></div>
+            <div class="metric-data">
+              <div class="metric-label">Milvus Status</div>
+              <div class="metric-value text-md mt-2" id="dash-milvus-status">...</div>
+            </div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-icon" style="background:#fce4ec;color:#c62828"><i class="ph ph-cpu"></i></div>
+            <div class="metric-data">
+              <div class="metric-label">Model</div>
+              <div class="metric-value" id="dash-model" style="font-size:0.78rem;margin-top:4px">MiniLM-L12-v2</div>
+            </div>
           </div>
         </div>
 
-        <div class="chart-panel">
+        <!-- Session Stats Cards -->
+        <div class="dash-section-label"><i class="ph ph-lightning"></i> Session Statistics</div>
+        <div class="metric-cards mb-4" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));">
+          <div class="metric-card session-card">
+            <div class="metric-icon session-icon"><i class="ph ph-magnifying-glass"></i></div>
+            <div class="metric-data">
+              <div class="metric-label">Searches</div>
+              <div class="metric-value" id="dash-search-count">0</div>
+            </div>
+          </div>
+          <div class="metric-card session-card">
+            <div class="metric-icon sql-icon"><i class="ph ph-timer"></i></div>
+            <div class="metric-data">
+              <div class="metric-label">Avg SQL Latency</div>
+              <div class="metric-value" id="dash-avg-sql">— <span class="metric-unit">ms</span></div>
+            </div>
+          </div>
+          <div class="metric-card session-card">
+            <div class="metric-icon vector-icon"><i class="ph ph-timer"></i></div>
+            <div class="metric-data">
+              <div class="metric-label">Avg Vector Latency</div>
+              <div class="metric-value" id="dash-avg-vector">— <span class="metric-unit">ms</span></div>
+            </div>
+          </div>
+          <div class="metric-card session-card">
+            <div class="metric-icon sql-icon"><i class="ph ph-trend-up"></i></div>
+            <div class="metric-data">
+              <div class="metric-label">SQL Results Total</div>
+              <div class="metric-value" id="dash-total-sql">0</div>
+            </div>
+          </div>
+          <div class="metric-card session-card">
+            <div class="metric-icon vector-icon"><i class="ph ph-trend-up"></i></div>
+            <div class="metric-data">
+              <div class="metric-label">Vector Results Total</div>
+              <div class="metric-value" id="dash-total-vec">0</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Latency Chart -->
+        <div class="chart-panel mb-4">
           <div class="chart-header">
-            <h3 class="section-title">Latency Comparison (ms)</h3>
+            <h3 class="section-title"><i class="ph ph-chart-bar"></i> Latency Comparison (ms) — Last 5 Searches</h3>
             <div class="chart-legend">
               <span class="legend-item"><span class="legend-color sql-color"></span> PostgreSQL</span>
               <span class="legend-item"><span class="legend-color vector-color"></span> Vector</span>
             </div>
           </div>
-          <div class="chart-placeholder">
-            <div class="bar-group">
-              <div class="bar bar-sql tooltip" data-tip="12.8ms" style="height: 60%"></div>
-              <div class="bar bar-vector tooltip" data-tip="8.5ms" style="height: 40%"></div><span>Q1</span>
+          <div class="chart-placeholder" id="latency-chart"></div>
+        </div>
+
+        <!-- Top Positions | Top Skills | Experience -->
+        <div class="split-view mb-4">
+          <div class="split-column chart-panel">
+            <h3 class="section-title mb-3"><i class="ph ph-briefcase"></i> Top Positions</h3>
+            <div id="dash-top-positions" class="dash-list">Loading...</div>
+          </div>
+          <div class="split-column chart-panel">
+            <h3 class="section-title mb-3"><i class="ph ph-code"></i> Top Skills</h3>
+            <div id="dash-top-skills" class="dash-list">Loading...</div>
+          </div>
+          <div class="split-column chart-panel">
+            <h3 class="section-title mb-3"><i class="ph ph-graduation-cap"></i> Experience Distribution</h3>
+            <div id="dash-experience" class="dash-list">Loading...</div>
+          </div>
+        </div>
+
+        <!-- Score Distribution | Donut Chart -->
+        <div class="split-view mb-4">
+          <div class="split-column chart-panel">
+            <h3 class="section-title mb-3"><i class="ph ph-chart-bar-horizontal"></i> Match Score Distribution</h3>
+            <div id="dash-score-dist">
+              <div class="empty-state" style="padding:40px 20px; border-radius:12px;">Perform a search to see distribution...</div>
             </div>
-            <div class="bar-group">
-              <div class="bar bar-sql tooltip" data-tip="6.2ms" style="height: 30%"></div>
-              <div class="bar bar-vector tooltip" data-tip="7.1ms" style="height: 35%"></div><span>Q2</span>
-            </div>
-            <div class="bar-group">
-              <div class="bar bar-sql tooltip" data-tip="6.5ms" style="height: 32%"></div>
-              <div class="bar bar-vector tooltip" data-tip="9.2ms" style="height: 45%"></div><span>Q3</span>
-            </div>
-            <div class="bar-group">
-              <div class="bar bar-sql tooltip" data-tip="4.5ms" style="height: 22%"></div>
-              <div class="bar bar-vector tooltip" data-tip="8.8ms" style="height: 43%"></div><span>Q4</span>
-            </div>
-            <div class="bar-group">
-              <div class="bar bar-sql tooltip" data-tip="7.5ms" style="height: 37%"></div>
-              <div class="bar bar-vector tooltip" data-tip="11.0ms" style="height: 55%"></div><span>Q5</span>
+          </div>
+          <div class="split-column chart-panel" style="display:flex;flex-direction:column;">
+            <h3 class="section-title mb-3"><i class="ph ph-chart-pie"></i> Result Method Split</h3>
+            <div class="donut-wrapper">
+              <div class="donut-ring" id="donut-ring">
+                <div class="donut-inner">
+                  <span class="donut-main" id="donut-label">—</span>
+                  <small class="donut-sub">SQL share</small>
+                </div>
+              </div>
+              <div class="donut-legend-list">
+                <div class="donut-legend-item"><span class="donut-dot" style="background:var(--sql-logic)"></span><span>SQL: <strong id="donut-sql-count">0</strong></span></div>
+                <div class="donut-legend-item"><span class="donut-dot" style="background:var(--vector-logic)"></span><span>Vector: <strong id="donut-vec-count">0</strong></span></div>
+              </div>
             </div>
           </div>
         </div>
 
-        <div class="split-view mt-4">
+        <!-- Strategy History | Session Keywords -->
+        <div class="split-view mb-4">
           <div class="split-column chart-panel">
-            <h3 class="section-title mb-3">Top Positions</h3>
-            <div id="dash-top-positions" class="dash-list">Loading...</div>
+            <h3 class="section-title mb-3"><i class="ph ph-flow-arrow"></i> SQL Strategy History</h3>
+            <div class="strategy-container">
+              <div class="strategy-row">
+                <span class="strategy-badge strat-and">AND</span>
+                <div class="progress-track" style="flex:1"><div class="progress-fill strat-fill-and" id="strat-and-bar" style="width:0%"></div></div>
+                <span class="strategy-count" id="strat-and-count">0</span>
+              </div>
+              <div class="strategy-row">
+                <span class="strategy-badge strat-partial">PARTIAL</span>
+                <div class="progress-track" style="flex:1"><div class="progress-fill strat-fill-partial" id="strat-partial-bar" style="width:0%"></div></div>
+                <span class="strategy-count" id="strat-partial-count">0</span>
+              </div>
+              <div class="strategy-row">
+                <span class="strategy-badge strat-or">OR</span>
+                <div class="progress-track" style="flex:1"><div class="progress-fill strat-fill-or" id="strat-or-bar" style="width:0%"></div></div>
+                <span class="strategy-count" id="strat-or-count">0</span>
+              </div>
+            </div>
           </div>
           <div class="split-column chart-panel">
-            <h3 class="section-title mb-3">Experience Distribution</h3>
-            <div id="dash-experience" class="dash-list">Loading...</div>
+            <h3 class="section-title mb-3"><i class="ph ph-tag"></i> Session Keywords</h3>
+            <div id="dash-session-keywords" class="keyword-chips">
+              <span style="opacity:0.5;font-style:italic;font-size:0.875rem">Search to populate...</span>
+            </div>
           </div>
         </div>
       </div>
